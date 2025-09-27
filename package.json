@@ -3,6 +3,11 @@
     "version": "1.0.0",
     "description": "An Electron application with Vue",
     "main": "./out/main/index.js",
+    "author": {
+        "name": "NeoPlays",
+        "email": "80448387+NeoPlays@users.noreply.github.com",
+        "url": "https://github.com/NeoPlays"
+    },
     "scripts": {
         "format": "prettier --write .",
         "lint": "eslint --cache .",
@@ -16,25 +21,25 @@
         "build:linux": "npm run build && electron-builder --linux"
     },
     "dependencies": {
-        "@electron-toolkit/preload": "^3.0.1",
+        "@electron-toolkit/preload": "^3.0.2",
         "@electron-toolkit/utils": "^4.0.0",
-        "electron-log": "^5.3.2",
-        "electron-store": "^10.0.1",
+        "electron-log": "^5.4.3",
+        "electron-store": "^10.1.0",
         "lodash": "^4.17.21",
-        "pinia": "^3.0.2",
-        "ssh2": "^1.16.0"
+        "pinia": "^3.0.3",
+        "ssh2": "^1.17.0"
     },
     "devDependencies": {
-        "@electron-toolkit/eslint-config": "^2.0.0",
+        "@electron-toolkit/eslint-config": "^2.1.0",
         "@electron-toolkit/eslint-config-prettier": "^3.0.0",
-        "@vitejs/plugin-vue": "^5.2.1",
-        "electron": "^34.2.0",
-        "electron-builder": "^25.1.8",
-        "electron-vite": "^3.0.0",
-        "eslint": "^9.20.1",
-        "eslint-plugin-vue": "^9.32.0",
-        "prettier": "^3.5.1",
-        "vite": "^6.1.0",
-        "vue": "^3.5.13"
+        "@vitejs/plugin-vue": "^6.0.1",
+        "electron": "^38.1.2",
+        "electron-builder": "^26.0.12",
+        "electron-vite": "^4.0.1",
+        "eslint": "^9.36.0",
+        "eslint-plugin-vue": "^10.5.0",
+        "prettier": "^3.6.2",
+        "vite": "^7.1.7",
+        "vue": "^3.5.22"
     }
 }
