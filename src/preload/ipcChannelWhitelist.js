@@ -1,0 +1,1 @@
+export const allowedChannels = ['ping', 'import-server-from-stereum', 'store-get', 'store-set', 'ssh-login', 'get-all-nodes'];

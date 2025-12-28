@@ -6,7 +6,7 @@
                 <span class="node-host">{{ node.host }}</span>
             </div>
         </div>
-        <button @click="$emit('addConnection')">Add Node Connection</button>
+        <button @click="router.push('/login')">Add Node Connection</button>
     </div>
 </template>
 
@@ -14,6 +14,9 @@
 import { onMounted, ref } from 'vue'
 import { useNodesStore } from '@stores/useNodes'
 import { storeToRefs } from 'pinia'
+import { useRouter } from 'vue-router'
+
+const router = useRouter()
 
 const store = useNodesStore()
 
@@ -25,6 +28,8 @@ onMounted(async () => {
     refreshNodes()
     console.log(nodes.value)
 })
+
+
 </script>
 
 <style scoped>
@@ -35,6 +40,20 @@ onMounted(async () => {
     justify-content: center;
     width: 100%;
     height: 100%;
+}
+.node-manager button {
+    position: absolute;
+    top: 20px;
+    right: 20px;
+    padding: 10px 20px;
+    background-color: #94C5CC;
+    color: black;
+    border: none;
+    border-radius: 5px;
+}
+.node-manager button:hover {
+    background-color: #7AA8AD;
+    cursor: pointer;
 }
 .node-manager-list {
     display: flex;

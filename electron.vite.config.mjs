@@ -19,6 +19,8 @@ export default defineConfig({
             alias: {
                 '@renderer': resolve('src/renderer/src'),
                 '@stores': resolve('src/renderer/src/stores'),
+                '@components': resolve('src/renderer/src/components'),
+                '@views': resolve('src/renderer/src/views'),
             }
         },
         plugins: [vue()]

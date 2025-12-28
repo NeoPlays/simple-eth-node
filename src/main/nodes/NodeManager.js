@@ -16,6 +16,10 @@ export class NodeManager {
     }
 
     getAllNodes() {
-        return this.nodes.map(node => node.toDTO())
+        return this.nodes.map(node => node.toListDTO())
     }
 }
+
+const nodeManager = new NodeManager()
+
+export default nodeManager;

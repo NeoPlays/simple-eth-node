@@ -1,7 +1,7 @@
 import log from "electron-log";
 import { readFileSync } from "fs";
 
-export class StoreService {
+class StoreService {
     constructor() {
         this.init();
     }
@@ -54,3 +54,7 @@ export class StoreService {
         return this.get('server');
     }
 }
+
+const storage = new StoreService()
+
+export default storage;

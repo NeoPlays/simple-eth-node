@@ -1,4 +1,4 @@
-# stereum-lite
+# simple-eth-node
 
 An Electron application with Vue
 

@@ -67,6 +67,7 @@ export class SSHService {
         if (useSudo) {
             command = "sudo " + command
         }
+        log.debug('%cCOMMAND:%c', 'color: yellow', 'color: unset', command)
         return new Promise(async (resolve, reject) => {
             const sshConn = await this.getConnection()
             const conn = sshConn.conn
@@ -93,7 +94,6 @@ export class SSHService {
                     data.stdout += stdout.toString("utf8");
                   })
                   .stderr.on("data", (stderr) => {
-                    log.debug("stderr got data", stderr.toString("utf8"));
                     data.stderr += stderr.toString("utf8");
                   });
               });
@@ -107,26 +107,23 @@ export class SSHService {
             const params = this.SSHParams.getConnectionParams()
             conn.connect(params)
             conn.on('ready', async () => {
-                log.info('Client :: ready')
                 this.connections.push(sshConn)
                 if(!this.SSHParams.name){
-                    log.info('Client :: get hostname')
                     const hostname = await this.exec('hostname')
-                    log.info('Client :: hostname ::', hostname)
                     this.SSHParams.setHostName(hostname.stdout ? hostname.stdout.trim() : 'Unknown')
                 }
                 resolve({code: 0, message: 'SSH connection established'})
             })
             conn.on('error', (err) => {
-                log.error('Client :: error ::', err)
+                log.error('SSH :: ERROR :: ', err)
                 reject({code: 1, message: 'SSH connection error', error: err})
             })
             conn.on('end', () => {
-                log.info('Client :: end')
+                log.info('SSH :: END')
                 this.connections = this.connections.filter(c => c.conn.id !== sshConn.id)
             })
             conn.on('close', () => {
-                log.info('Client :: close')
+                log.info('SSH :: CLOSE')
                 this.connections = this.connections.filter(c => c.conn.id !== conn.id)
             })
         })

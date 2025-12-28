@@ -1,9 +1,11 @@
 <template>
-    <div class="ssh-server-list">
-        <div class="ssh-server" v-for="server in server" :key="server.name" @click="$emit('selectServer', server)">
-            <span class="ssh-server-name">{{ server.name }}</span>
-            <span class="ssh-server-host">{{ server.host }}</span>
-        </div> 
+    <div class="ssh-server-list-container">
+        <div class="ssh-server-list">
+            <div class="ssh-server" v-for="server in server" :key="server.name" @click="setCredentials(server)">
+                <span class="ssh-server-name">{{ server.name }}</span>
+                <span class="ssh-server-host">{{ server.host }}</span>
+            </div> 
+        </div>
     </div>
 </template>
 <script setup>
@@ -14,11 +16,7 @@ import { useServerStore } from '@stores/useServer';
 const store = useServerStore()
 
 const { server } = storeToRefs(store)
-const { getServer, setServer } = store
-
-async function importServer() {
-    await setServer(await window.api.invoke('import-server-from-stereum'))
-}
+const { getServer, setCredentials } = store
 
 async function loadserver() {
     await getServer()
@@ -30,15 +28,19 @@ onMounted(() => {
 })
 </script>
 <style scoped>
-.ssh-server-list {
+.ssh-server-list-container {
     display: flex;
     flex-direction: column;
-    max-width: 100%;
-    max-height: 500px;
+    height: 100%;
+    width: 100%;
     background-color: #a1a6b4;
     padding: 20px;
-    border-radius: 5px;
-    box-shadow: 0 0 10px rgba(0, 0, 0, 0.3);
+    border-radius: 20px;
+}
+.ssh-server-list {
+    background-color: #fefefe;
+    border-radius: 10px;
+    scrollbar-gutter: stable both-edges;
     overflow: auto;
 }
 .ssh-server {
