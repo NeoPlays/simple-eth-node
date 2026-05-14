@@ -3,6 +3,7 @@ import { createRouter, createWebHashHistory } from "vue-router";
 //Views
 import LoginView from "@views/LoginView.vue";
 import NodeManagerView from "@views/NodeManagerView.vue";
+import NodeView from "@views/NodeView.vue";
 
 const routes = [
   {
@@ -14,6 +15,11 @@ const routes = [
     path: "/",
     name: "NodeManager",
     component: NodeManagerView
+  },
+  {
+    path: "/node/:id",
+    name: "Node",
+    component: NodeView
   }
 ];
 
