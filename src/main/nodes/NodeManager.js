@@ -11,6 +11,12 @@ export class NodeManager {
         this.nodes = this.nodes.filter(node => node.id !== nodeId)
     }
 
+    disconnectNode(nodeId) {
+        const node = this.nodes.find(node => node.id === nodeId)
+        if (node) node.disconnect()
+        this.removeNode(nodeId)
+    }
+
     getNode(nodeId) {
         const node = this.nodes.find(node => node.id === nodeId)
         return node ? node.toDTO() : null

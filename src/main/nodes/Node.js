@@ -68,6 +68,10 @@ export class Node {
         return this.services;
     }
 
+    disconnect() {
+        this.sshService.disconnect()
+    }
+
     async fetchServiceConfigs() {
         if (!this.services || this.services.length === 0) {
             await this.fetchServices();

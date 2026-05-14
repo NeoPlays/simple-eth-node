@@ -100,6 +100,11 @@ export class SSHService {
         })
     }
 
+    disconnect() {
+        this.connections.forEach(c => c.conn.end())
+        this.connections = []
+    }
+
     async connect() {
         return new Promise((resolve, reject) => {
             const conn = new Client()

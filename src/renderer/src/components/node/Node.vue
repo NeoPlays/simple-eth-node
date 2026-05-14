@@ -2,9 +2,12 @@
     <div class="node-view">
         <div class="top-bar">
             <button class="btn-ghost" @click="router.back()">← Back</button>
-            <button class="btn-accent" @click="refresh" :disabled="loading">
-                {{ loading ? 'Refreshing…' : '↻ Refresh' }}
-            </button>
+            <div class="top-bar-actions">
+                <button class="btn-accent" @click="refresh" :disabled="loading">
+                    {{ loading ? 'Refreshing…' : '↻ Refresh' }}
+                </button>
+                <button class="btn-danger" @click="disconnect" :disabled="loading">Disconnect</button>
+            </div>
         </div>
 
         <div v-if="loading && !nodeData" class="state-message">Loading node data...</div>
@@ -69,6 +72,11 @@ function refresh() {
     load(true)
 }
 
+async function disconnect() {
+    await store.disconnectNode(route.params.id)
+    router.push('/')
+}
+
 onMounted(() => load())
 </script>
 
@@ -86,7 +94,27 @@ onMounted(() => load())
 .top-bar {
     display: flex;
     justify-content: space-between;
+    align-items: center;
 }
+
+.top-bar-actions {
+    display: flex;
+    gap: 8px;
+}
+
+.btn-danger {
+    padding: 7px 14px;
+    background-color: transparent;
+    color: #e06c75;
+    border: 1px solid #e06c75;
+    border-radius: 8px;
+    cursor: pointer;
+    font-size: 13px;
+    font-weight: 500;
+    transition: background-color 150ms;
+}
+.btn-danger:hover:not(:disabled) { background-color: rgba(224, 108, 117, 0.1); }
+.btn-danger:disabled { opacity: 0.5; cursor: default; }
 
 .btn-ghost {
     padding: 7px 14px;

@@ -33,4 +33,8 @@ export function initializeIpcHandlers() {
     ipcMain.handle('get-node', (_, nodeId) => {
         return nodeManager.getNode(nodeId);
     });
+
+    ipcMain.handle('disconnect-node', (_, nodeId) => {
+        nodeManager.disconnectNode(nodeId)
+    });
 }

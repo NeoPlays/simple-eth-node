@@ -34,5 +34,13 @@ export const useNodesStore = defineStore('nodes', {
                 return null
             })
         },
+        disconnectNode(nodeId) {
+            return window.api.invoke('disconnect-node', nodeId).then(() => {
+                delete this.nodeCache[nodeId]
+                this.nodes = this.nodes.filter(n => n.id !== nodeId)
+            }).catch((error) => {
+                console.error('Error disconnecting node:', error)
+            })
+        },
     },
 })
