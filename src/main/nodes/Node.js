@@ -13,7 +13,6 @@ export class Node {
         this.sshService = new SSHService(new SSHParams(sshCredentials.host, sshCredentials.port, sshCredentials.username, sshCredentials.password, sshCredentials.privateKey, sshCredentials.passphrase));;
         this.settings = null;
         this.services = [];
-        this.serviceConfigs = {};
     }
 
     /**
@@ -25,6 +24,21 @@ export class Node {
             id: this.id,
             name: this.sshService.SSHParams.name,
             host: this.sshService.SSHParams.host,
+        }
+    }
+
+    async toDTO(refresh = false){
+        await this.fetchSettings(refresh);
+        await this.fetchServices(refresh);
+        await this.fetchServiceConfigs();
+        return {
+            id: this.id,
+            name: this.sshService.SSHParams.name,
+            host: this.sshService.SSHParams.host,
+            port: this.sshService.SSHParams.port,
+            username: this.sshService.SSHParams.username,
+            settings: this.settings,
+            services: this.services,
         }
     }
 
@@ -48,7 +62,8 @@ export class Node {
     async fetchServices(refresh = false) {
         if (refresh || !this.services || this.services.length === 0) {
             const response = await this.sshService.exec("ls /etc/stereum/services");   //TODO: handle errors (non 0 exit code)
-            this.services = response.stdout.split('\n').filter(s => s.trim() !== '').map(s => s.replace('.yaml', '').trim());
+            const serviceIDs = response.stdout.split('\n').filter(s => s.trim() !== '').map(s => s.replace('.yaml', '').trim());
+            this.services = serviceIDs.map(id => ({ id }));
         }
         return this.services;
     }
@@ -58,7 +73,7 @@ export class Node {
             await this.fetchServices();
         }
         for (const service of this.services) {
-            const response = await this.sshService.exec(`cat /etc/stereum/services/${service}.yaml`);   //TODO: handle errors (non 0 exit code)
+            const response = await this.sshService.exec(`cat /etc/stereum/services/${service.id}.yaml`);   //TODO: handle errors (non 0 exit code)
             service.config = YAML.parse(response.stdout);
         }
         return this.services;

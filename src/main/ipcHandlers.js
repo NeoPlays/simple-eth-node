@@ -29,4 +29,8 @@ export function initializeIpcHandlers() {
     ipcMain.handle('get-all-nodes', () => {
         return nodeManager.getAllNodes()
     });
+
+    ipcMain.handle('get-node', (_, nodeId) => {
+        return nodeManager.getNode(nodeId);
+    });
 }

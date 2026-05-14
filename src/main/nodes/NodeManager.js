@@ -12,7 +12,8 @@ export class NodeManager {
     }
 
     getNode(nodeId) {
-        return this.nodes.find(node => node.id === nodeId)
+        const node = this.nodes.find(node => node.id === nodeId)
+        return node ? node.toDTO() : null
     }
 
     getAllNodes() {
