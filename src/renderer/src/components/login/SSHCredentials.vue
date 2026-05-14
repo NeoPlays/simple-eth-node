@@ -14,22 +14,27 @@
             </div>
         </div>
 
+        <div v-if="connecting" class="connecting-overlay">
+            <span class="connecting-spinner"></span>
+            <span class="connecting-label">Connecting…</span>
+        </div>
+
         <div class="actions">
-            <button class="btn-primary" @click="login">Connect</button>
+            <button class="btn-primary" @click="login" :disabled="connecting">Connect</button>
             <div class="actions-row">
-                <button class="btn-secondary" @click="save">Save</button>
-                <button class="btn-secondary" @click="importServer">Import from Stereum</button>
+                <button class="btn-secondary" @click="save" :disabled="connecting">Save</button>
+                <button class="btn-secondary" @click="importServer" :disabled="connecting">Import from Stereum</button>
             </div>
             <div class="actions-row">
-                <button class="btn-ghost" @click="router.push('/')">Back</button>
-                <button class="btn-danger" @click="deleteServer">Delete</button>
+                <button class="btn-ghost" @click="router.push('/')" :disabled="connecting">Back</button>
+                <button class="btn-danger" @click="deleteServer" :disabled="connecting">Delete</button>
             </div>
         </div>
     </div>
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
+import { ref } from 'vue'
 import _ from 'lodash'
 import { storeToRefs } from 'pinia'
 import { useServerStore } from '@stores/useServer'
@@ -39,6 +44,8 @@ const router = useRouter()
 const store = useServerStore()
 const { server, credentials } = storeToRefs(store)
 const { getServer, setServer } = store
+
+const connecting = ref(false)
 
 const fields = [
     { id: 'field-name',        label: 'Name',        key: 'name' },
@@ -55,6 +62,7 @@ async function importServer() {
 }
 
 async function login() {
+    connecting.value = true
     await window.api.invoke('ssh-login', _.cloneDeep(credentials.value))
     router.push('/')
 }
@@ -201,4 +209,39 @@ button {
     border: 1px solid #e06c75;
 }
 .btn-danger:hover { background-color: rgba(224, 108, 117, 0.1); }
+
+button:disabled {
+    opacity: 0.4;
+    cursor: default;
+    pointer-events: none;
+}
+
+.connecting-overlay {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    padding: 12px;
+    background-color: var(--color-background-mute);
+    border-radius: 8px;
+    border: 1px solid var(--ev-c-gray-2);
+}
+
+.connecting-label {
+    font-size: 13px;
+    color: var(--ev-c-text-2);
+}
+
+.connecting-spinner {
+    width: 14px;
+    height: 14px;
+    border: 2px solid var(--ev-c-gray-2);
+    border-top-color: #94C5CC;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
 </style>
