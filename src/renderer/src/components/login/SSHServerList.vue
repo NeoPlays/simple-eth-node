@@ -1,55 +1,91 @@
 <template>
-    <div class="ssh-server-list-container">
-        <div class="ssh-server-list">
-            <div class="ssh-server" v-for="server in server" :key="server.name" @click="setCredentials(server)">
-                <span class="ssh-server-name">{{ server.name }}</span>
-                <span class="ssh-server-host">{{ server.host }}</span>
-            </div> 
+    <div class="server-list-panel">
+        <h2 class="panel-title">Saved Servers</h2>
+        <div class="server-list">
+            <div
+                class="server-item"
+                v-for="s in server"
+                :key="s.name"
+                @click="setCredentials(s)"
+            >
+                <span class="server-name">{{ s.name }}</span>
+                <span class="server-host">{{ s.host }}</span>
+            </div>
+            <div v-if="!server?.length" class="empty">No saved servers</div>
         </div>
     </div>
 </template>
+
 <script setup>
-import { onMounted, ref} from 'vue'
+import { onMounted } from 'vue'
 import { storeToRefs } from 'pinia'
-import { useServerStore } from '@stores/useServer';
+import { useServerStore } from '@stores/useServer'
 
 const store = useServerStore()
-
 const { server } = storeToRefs(store)
 const { getServer, setCredentials } = store
 
-async function loadserver() {
-    await getServer()
-}
-
-onMounted(() => {
-    console.log('SSHServerList.vue mounted')
-    loadserver()
-})
+onMounted(() => getServer())
 </script>
+
 <style scoped>
-.ssh-server-list-container {
+.server-list-panel {
     display: flex;
     flex-direction: column;
     height: 100%;
     width: 100%;
-    background-color: #a1a6b4;
+    background-color: var(--color-background-soft);
+    border-radius: 14px;
     padding: 20px;
-    border-radius: 20px;
+    gap: 12px;
 }
-.ssh-server-list {
-    background-color: #fefefe;
-    border-radius: 10px;
-    scrollbar-gutter: stable both-edges;
-    overflow: auto;
+
+.panel-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ev-c-text-2);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
 }
-.ssh-server {
+
+.server-list {
     display: flex;
     flex-direction: column;
-    margin: 10px;
-    padding: 5px;
-    border-radius: 5px;
-    background-color: #b4d2e7;
+    gap: 6px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.server-item {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 12px;
+    border-radius: 8px;
+    background-color: var(--ev-c-gray-3);
     cursor: pointer;
+    transition: background-color 150ms;
+}
+
+.server-item:hover {
+    background-color: var(--ev-c-gray-2);
+}
+
+.server-name {
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--ev-c-text-1);
+}
+
+.server-host {
+    font-size: 12px;
+    color: var(--ev-c-text-3);
+}
+
+.empty {
+    font-size: 13px;
+    color: var(--ev-c-text-3);
+    text-align: center;
+    padding: 24px 0;
 }
 </style>

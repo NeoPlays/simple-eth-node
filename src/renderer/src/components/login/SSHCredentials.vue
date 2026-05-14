@@ -1,67 +1,54 @@
 <template>
-    <div class="ssh-form">
-        <div class="ssh-credentials">
-            <div class="ssh-credentials-row">
-                <label for="ssh-credentials-name">Name</label>
-                <input type="text" id="ssh-credentials-name" v-model.trim="credentials.name" />
+    <div class="credentials-panel">
+        <h2 class="panel-title">SSH Connection</h2>
+        <div class="form">
+            <div class="field" v-for="field in fields" :key="field.id">
+                <label :for="field.id">{{ field.label }}</label>
+                <input
+                    :id="field.id"
+                    :type="field.type ?? 'text'"
+                    v-model="credentials[field.key]"
+                    v-bind="field.modifiers ?? {}"
+                    autocomplete="off"
+                />
             </div>
-            <div class="ssh-credentials-row">
-                <label for="ssh-credentials-host">Host</label>
-                <input type="text" id="ssh-credentials-host" v-model.trim="credentials.host" />
+        </div>
+
+        <div class="actions">
+            <button class="btn-primary" @click="login">Connect</button>
+            <div class="actions-row">
+                <button class="btn-secondary" @click="save">Save</button>
+                <button class="btn-secondary" @click="importServer">Import from Stereum</button>
             </div>
-            <div class="ssh-credentials-row">
-                <label for="ssh-credentials-port">Port</label>
-                <input type="number" id="ssh-credentials-port" v-model.number="credentials.port" />
-            </div>
-            <div class="ssh-credentials-row">
-                <label for="ssh-credentials-username">Username</label>
-                <input type="text" id="ssh-credentials-username" v-model.trim="credentials.username" />
-            </div>
-            <div class="ssh-credentials-row">
-                <label for="ssh-credentials-password">Password</label>
-                <input type="password" id="ssh-credentials-password" v-model="credentials.password" />
-            </div>
-            <div class="ssh-credentials-row">
-                <label for="ssh-credentials-private-key">Private Key</label>
-                <input type="text" id="ssh-credentials-private-key" v-model.trim="credentials.privateKey" />
-            </div>
-            <div class="ssh-credentials-row">
-                <label for="ssh-credentials-passphrase">Passphrase</label>
-                <input type="password" id="ssh-credentials-passphrase" v-model="credentials.passphrase" />
-            </div>
-            <div class="ssh-credentials-row">
-                <button class="ssh-login-button" @click="login">Login</button>
-            </div>
-            <div class="ssh-credentials-row">
-                <button class="ssh-save-button" @click="save">Save</button>
-            </div>
-            <div class="ssh-credentials-row">
-                <button class="ssh-save-button" @click="importServer">Import From Stereum</button>
-            </div>
-            <div class="ssh-credentials-row">
-                <button class="ssh-save-button" @click="deleteServer">Delete</button>
-            </div>
-            <div class="ssh-credentials-row">
-                <button class="ssh-save-button" @click="router.push('/')">Back</button>
+            <div class="actions-row">
+                <button class="btn-ghost" @click="router.push('/')">Back</button>
+                <button class="btn-danger" @click="deleteServer">Delete</button>
             </div>
         </div>
     </div>
 </template>
+
 <script setup>
-import { onMounted, ref } from 'vue'
+import { onMounted } from 'vue'
 import _ from 'lodash'
 import { storeToRefs } from 'pinia'
-import { useServerStore } from '@stores/useServer';
+import { useServerStore } from '@stores/useServer'
 import { useRouter } from 'vue-router'
 
 const router = useRouter()
-
 const store = useServerStore()
-
 const { server, credentials } = storeToRefs(store)
 const { getServer, setServer } = store
 
-const emit = defineEmits(['login'])
+const fields = [
+    { id: 'field-name',        label: 'Name',        key: 'name' },
+    { id: 'field-host',        label: 'Host',        key: 'host' },
+    { id: 'field-port',        label: 'Port',        key: 'port',       type: 'number' },
+    { id: 'field-username',    label: 'Username',    key: 'username' },
+    { id: 'field-password',    label: 'Password',    key: 'password',   type: 'password' },
+    { id: 'field-private-key', label: 'Private Key', key: 'privateKey' },
+    { id: 'field-passphrase',  label: 'Passphrase',  key: 'passphrase', type: 'password' },
+]
 
 async function importServer() {
     await setServer(await window.api.invoke('import-server-from-stereum'))
@@ -78,13 +65,12 @@ async function save() {
         return
     }
     const idx = server.value.findIndex(s => s.name === credentials.value.name)
-
-    if (idx === -1) {   // If server with the same name does not exist, add it
-        server.value.push(copyCredentials(credentials.value))
-    } else {    // Otherwise update existing server
-        server.value[server.value.findIndex(s => s.name === credentials.value.name)] = copyCredentials(credentials.value)
+    const copy = copyCredentials(credentials.value)
+    if (idx === -1) {
+        server.value.push(copy)
+    } else {
+        server.value[idx] = copy
     }
-
     await setServer(_.cloneDeep(server.value))
     await getServer()
 }
@@ -95,14 +81,11 @@ async function deleteServer() {
         return
     }
     const idx = server.value.findIndex(s => s.name === credentials.value.name)
-
-    if (idx === -1) {   // If server with the same name does not exist, alert user
+    if (idx === -1) {
         alert('Server with this name does not exist')
         return
-    } else {    // Otherwise delete existing server
-        server.value.splice(idx, 1)
     }
-
+    server.value.splice(idx, 1)
     await setServer(_.cloneDeep(server.value))
     await getServer()
 }
@@ -113,43 +96,109 @@ function copyCredentials(creds) {
     delete copy.passphrase
     return copy
 }
-
-onMounted(() => {
-    console.log('SSHLogin.vue mounted')
-})
 </script>
-<style scoped>
 
-.ssh-form {
+<style scoped>
+.credentials-panel {
     display: flex;
+    flex-direction: column;
     height: 100%;
     width: 100%;
-    background-color: #a1a6b4;
-    border-radius: 20px;
+    background-color: var(--color-background-soft);
+    border-radius: 14px;
     padding: 20px;
-    overflow: auto;
+    gap: 16px;
+    overflow-y: auto;
 }
 
-.ssh-credentials {
+.panel-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--ev-c-text-2);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+}
+
+.form {
     display: flex;
     flex-direction: column;
     gap: 10px;
 }
 
-.ssh-credentials-row {
+.field {
     display: flex;
-    flex-direction: row;
-    justify-content: space-between;
-    gap: 10px;
+    flex-direction: column;
+    gap: 4px;
 }
 
-.ssh-credentials-row input {
+.field label {
+    font-size: 12px;
+    font-weight: 500;
+    color: var(--ev-c-text-2);
+}
+
+.field input {
+    padding: 8px 10px;
+    background-color: var(--color-background-mute);
+    border: 1px solid var(--ev-c-gray-2);
+    border-radius: 6px;
+    color: var(--ev-c-text-1);
+    font-size: 13px;
+    outline: none;
+    transition: border-color 150ms;
+}
+
+.field input:focus {
+    border-color: #94C5CC;
+}
+
+.actions {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-top: auto;
+}
+
+.actions-row {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+}
+
+button {
+    padding: 9px 14px;
     border: none;
-    border-radius: 5px;
-    padding: 5px;
+    border-radius: 8px;
+    font-size: 13px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background-color 150ms;
 }
 
-.ssh-credentials-row label {}
+.btn-primary {
+    background-color: #94C5CC;
+    color: #000;
+    width: 100%;
+}
+.btn-primary:hover { background-color: #7AAEB5; }
 
-.ssh-login-button {}
+.btn-secondary {
+    background-color: var(--ev-c-gray-3);
+    color: var(--ev-c-text-1);
+}
+.btn-secondary:hover { background-color: var(--ev-c-gray-2); }
+
+.btn-ghost {
+    background-color: transparent;
+    color: var(--ev-c-text-2);
+    border: 1px solid var(--ev-c-gray-2);
+}
+.btn-ghost:hover { background-color: var(--ev-c-gray-3); }
+
+.btn-danger {
+    background-color: transparent;
+    color: #e06c75;
+    border: 1px solid #e06c75;
+}
+.btn-danger:hover { background-color: rgba(224, 108, 117, 0.1); }
 </style>
