@@ -39,6 +39,21 @@
     font-weight: normal;
 }
 
+::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+}
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+::-webkit-scrollbar-thumb {
+    background: #1a1d22;
+    border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+    background: #252830;
+}
+
 ul {
     list-style: none;
 }

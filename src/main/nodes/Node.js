@@ -70,6 +70,19 @@ export class Node {
         return this.services;
     }
 
+    async fetchRawServiceConfig(serviceId) {
+        const response = await this.sshService.exec(`cat /etc/stereum/services/${serviceId}.yaml`)
+        if (response.rc !== 0) throw new Error(response.stderr || `fetchRawServiceConfig failed for ${serviceId}`)
+        return response.stdout
+    }
+
+    async writeServiceConfig(serviceId, content) {
+        const b64 = Buffer.from(content).toString('base64')
+        const path = `/etc/stereum/services/${serviceId}.yaml`
+        const response = await this.sshService.exec(`echo '${b64}' | base64 -d | sudo tee ${path} > /dev/null`, false)
+        if (response.rc !== 0) throw new Error(response.stderr || `writeServiceConfig failed for ${serviceId}`)
+    }
+
     disconnect() {
         this.sshService.disconnect()
     }

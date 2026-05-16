@@ -1,1 +1,1 @@
-export const allowedChannels = ['ping', 'import-server-from-stereum', 'store-get', 'store-set', 'ssh-login', 'get-all-nodes', 'get-node', 'disconnect-node'];
+export const allowedChannels = ['ping', 'import-server-from-stereum', 'store-get', 'store-set', 'ssh-login', 'get-all-nodes', 'get-node', 'disconnect-node', 'get-raw-service-config', 'write-service-config'];

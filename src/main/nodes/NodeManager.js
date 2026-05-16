@@ -17,8 +17,12 @@ export class NodeManager {
         this.removeNode(nodeId)
     }
 
+    findNode(nodeId) {
+        return this.nodes.find(node => node.id === nodeId) ?? null
+    }
+
     getNode(nodeId) {
-        const node = this.nodes.find(node => node.id === nodeId)
+        const node = this.findNode(nodeId)
         return node ? node.toDTO() : null
     }
 

@@ -1,5 +1,8 @@
 <template>
     <div class="node-view">
+        <div v-if="loading" class="loading-scrim">
+            <span class="loading-spinner"></span>
+        </div>
         <div class="top-bar">
             <button class="btn-ghost" @click="router.back()">← Back</button>
             <div class="top-bar-actions">
@@ -10,9 +13,7 @@
             </div>
         </div>
 
-        <div v-if="loading && !nodeData" class="state-message">Loading node data...</div>
-
-        <div v-else-if="error" class="state-message error">
+        <div v-if="error" class="state-message error">
             Failed to load node. Check your SSH connection and try again.
         </div>
 
@@ -34,6 +35,7 @@
                             <span class="service-name">{{ service.config?.service ?? service.id }}</span>
                             <span class="service-network" v-if="service.config?.network">{{ service.config.network }}</span>
                         </div>
+                        <button class="btn-edit" @click="editService(service.id)">Edit config</button>
                         <span class="service-image">{{ service.config?.image ?? '—' }}</span>
                         <span class="service-id">{{ service.id }}</span>
                     </div>
@@ -72,6 +74,10 @@ function refresh() {
     load(true)
 }
 
+function editService(serviceId) {
+    router.push({ name: 'ServiceConfig', params: { id: route.params.id, serviceId } })
+}
+
 async function disconnect() {
     await store.disconnectNode(route.params.id)
     router.push('/')
@@ -89,6 +95,31 @@ onMounted(() => load())
     padding: 32px 40px;
     gap: 24px;
     overflow-y: auto;
+    position: relative;
+}
+
+.loading-scrim {
+    position: absolute;
+    inset: 0;
+    background-color: rgba(0, 0, 0, 0.4);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 10;
+    border-radius: inherit;
+}
+
+.loading-spinner {
+    width: 24px;
+    height: 24px;
+    border: 3px solid rgba(148, 197, 204, 0.3);
+    border-top-color: #94C5CC;
+    border-radius: 50%;
+    animation: spin 0.7s linear infinite;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
 }
 
 .top-bar {
@@ -188,7 +219,7 @@ onMounted(() => load())
 
 .service-card {
     display: grid;
-    grid-template-columns: 1fr 1fr;
+    grid-template-columns: 1fr auto;
     grid-template-rows: auto auto;
     align-items: center;
     padding: 14px 18px;
@@ -202,6 +233,7 @@ onMounted(() => load())
     align-items: center;
     gap: 8px;
     grid-column: 1;
+    grid-row: 1;
 }
 
 .service-name {
@@ -219,15 +251,29 @@ onMounted(() => load())
     font-weight: 500;
 }
 
+.btn-edit {
+    grid-column: 2;
+    grid-row: 1;
+    padding: 4px 10px;
+    background-color: transparent;
+    color: var(--ev-c-text-2);
+    border: 1px solid var(--ev-c-gray-2);
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background-color 150ms, border-color 150ms;
+    white-space: nowrap;
+}
+.btn-edit:hover { background-color: var(--ev-c-gray-3); border-color: var(--ev-c-gray-1); }
+
 .service-image {
     font-size: 12px;
     color: var(--ev-c-text-2);
-    text-align: right;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
-    grid-column: 2;
-    grid-row: 1;
+    grid-column: 1;
+    grid-row: 2;
 }
 
 .service-id {
@@ -238,6 +284,7 @@ onMounted(() => load())
     text-overflow: ellipsis;
     white-space: nowrap;
     grid-column: 1 / -1;
+    grid-row: 3;
 }
 
 .state-message {

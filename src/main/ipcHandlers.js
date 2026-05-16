@@ -46,4 +46,26 @@ export function initializeIpcHandlers() {
             log.error('disconnect-node error:', error);
         }
     });
+
+    ipcMain.handle('get-raw-service-config', async (_, nodeId, serviceId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.fetchRawServiceConfig(serviceId)
+        } catch (error) {
+            log.error('get-raw-service-config error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('write-service-config', async (_, nodeId, serviceId, content) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            await node.writeServiceConfig(serviceId, content)
+        } catch (error) {
+            log.error('write-service-config error:', error)
+            throw error
+        }
+    });
 }
