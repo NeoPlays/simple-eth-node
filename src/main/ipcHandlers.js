@@ -17,12 +17,12 @@ export function initializeIpcHandlers() {
     // IPC NodeManager
     ipcMain.handle('ssh-login', (_, credentials) => {
         const node = new Node(credentials)
-        nodeManager.addNode(node);
         return node.sshService.connect().then((data) => {
+            nodeManager.addNode(node);
             return data;
         }).catch((error) => {
             log.error('SSH login error:', error);
-            return {code: 1, message: 'SSH login error', error: error};
+            return {code: 1, message: error.message || 'SSH login error'};
         });
     });
 
@@ -30,11 +30,20 @@ export function initializeIpcHandlers() {
         return nodeManager.getAllNodes()
     });
 
-    ipcMain.handle('get-node', (_, nodeId) => {
-        return nodeManager.getNode(nodeId);
+    ipcMain.handle('get-node', async (_, nodeId) => {
+        try {
+            return await nodeManager.getNode(nodeId);
+        } catch (error) {
+            log.error('get-node error:', error);
+            throw error;
+        }
     });
 
-    ipcMain.handle('disconnect-node', (_, nodeId) => {
-        nodeManager.disconnectNode(nodeId)
+    ipcMain.handle('disconnect-node', async (_, nodeId) => {
+        try {
+            nodeManager.disconnectNode(nodeId)
+        } catch (error) {
+            log.error('disconnect-node error:', error);
+        }
     });
 }

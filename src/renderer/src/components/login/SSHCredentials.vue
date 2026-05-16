@@ -19,6 +19,8 @@
             <span class="connecting-label">Connecting…</span>
         </div>
 
+        <div v-if="loginError" class="error-banner">{{ loginError }}</div>
+
         <div class="actions">
             <button class="btn-primary" @click="login" :disabled="connecting">Connect</button>
             <div class="actions-row">
@@ -46,6 +48,7 @@ const { server, credentials } = storeToRefs(store)
 const { getServer, setServer } = store
 
 const connecting = ref(false)
+const loginError = ref('')
 
 const fields = [
     { id: 'field-name',        label: 'Name',        key: 'name' },
@@ -63,8 +66,19 @@ async function importServer() {
 
 async function login() {
     connecting.value = true
-    await window.api.invoke('ssh-login', _.cloneDeep(credentials.value))
-    router.push('/')
+    loginError.value = ''
+    try {
+        const result = await window.api.invoke('ssh-login', _.cloneDeep(credentials.value))
+        if (result.code !== 0) {
+            loginError.value = result.message || 'Connection failed'
+            return
+        }
+        router.push('/')
+    } catch {
+        loginError.value = 'Unexpected error — check the logs'
+    } finally {
+        connecting.value = false
+    }
 }
 
 async function save() {
@@ -214,6 +228,15 @@ button:disabled {
     opacity: 0.4;
     cursor: default;
     pointer-events: none;
+}
+
+.error-banner {
+    padding: 10px 12px;
+    background-color: rgba(224, 108, 117, 0.1);
+    border: 1px solid #e06c75;
+    border-radius: 8px;
+    color: #e06c75;
+    font-size: 13px;
 }
 
 .connecting-overlay {

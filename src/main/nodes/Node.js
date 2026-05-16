@@ -49,7 +49,8 @@ export class Node {
      */
     async fetchSettings(refresh = false) {
         if (refresh || !this.settings) {
-            const response = await this.sshService.exec("cat /etc/stereum/stereum.yaml");   //TODO: handle errors (non 0 exit code)
+            const response = await this.sshService.exec("cat /etc/stereum/stereum.yaml");
+            if (response.rc !== 0) throw new Error(response.stderr || 'fetchSettings failed');
             this.settings = YAML.parse(response.stdout);
         }
         return this.settings;
@@ -61,7 +62,8 @@ export class Node {
      */
     async fetchServices(refresh = false) {
         if (refresh || !this.services || this.services.length === 0) {
-            const response = await this.sshService.exec("ls /etc/stereum/services");   //TODO: handle errors (non 0 exit code)
+            const response = await this.sshService.exec("ls /etc/stereum/services");
+            if (response.rc !== 0) throw new Error(response.stderr || 'fetchServices failed');
             const serviceIDs = response.stdout.split('\n').filter(s => s.trim() !== '').map(s => s.replace('.yaml', '').trim());
             this.services = serviceIDs.map(id => ({ id }));
         }
@@ -77,7 +79,8 @@ export class Node {
             await this.fetchServices();
         }
         for (const service of this.services) {
-            const response = await this.sshService.exec(`cat /etc/stereum/services/${service.id}.yaml`);   //TODO: handle errors (non 0 exit code)
+            const response = await this.sshService.exec(`cat /etc/stereum/services/${service.id}.yaml`);
+            if (response.rc !== 0) throw new Error(response.stderr || `fetchServiceConfig failed for ${service.id}`);
             service.config = YAML.parse(response.stdout);
         }
         return this.services;
