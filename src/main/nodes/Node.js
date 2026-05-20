@@ -1,6 +1,7 @@
 import { SSHService, SSHParams } from "@main/ssh/SSHService";
 import YAML from 'yaml';
 import { randomUUID } from "crypto";
+import log from 'electron-log';
 
 /**
  * Represents a remote node managed via SSH
@@ -31,6 +32,7 @@ export class Node {
         await this.fetchSettings(refresh);
         await this.fetchServices(refresh);
         await this.fetchServiceConfigs();
+        const containerStatuses = await this.fetchContainerStatuses();
         return {
             id: this.id,
             name: this.sshService.SSHParams.name,
@@ -38,7 +40,10 @@ export class Node {
             port: this.sshService.SSHParams.port,
             username: this.sshService.SSHParams.username,
             settings: this.settings,
-            services: this.services,
+            services: this.services.map(s => ({
+                ...s,
+                container: containerStatuses[s.id] ?? null,
+            })),
         }
     }
 
@@ -70,6 +75,20 @@ export class Node {
         return this.services;
     }
 
+    async fetchContainerStatuses() {
+        const response = await this.sshService.exec("docker ps -a --format '{{json .}}'")
+        if (response.rc !== 0) throw new Error(response.stderr || 'fetchContainerStatuses failed')
+        const statuses = {}
+        for (const line of response.stdout.split('\n').filter(l => l.trim())) {
+            try {
+                const c = JSON.parse(line)
+                const match = c.Names?.match(/stereum-([a-f0-9-]{36})/)
+                if (match) statuses[match[1]] = { state: c.State, status: c.Status, image: c.Image }
+            } catch { /* skip malformed lines */ }
+        }
+        return statuses
+    }
+
     async fetchRawServiceConfig(serviceId) {
         const response = await this.sshService.exec(`cat /etc/stereum/services/${serviceId}.yaml`)
         if (response.rc !== 0) throw new Error(response.stderr || `fetchRawServiceConfig failed for ${serviceId}`)
@@ -81,6 +100,33 @@ export class Node {
         const path = `/etc/stereum/services/${serviceId}.yaml`
         const response = await this.sshService.exec(`echo '${b64}' | base64 -d | sudo tee ${path} > /dev/null`, false)
         if (response.rc !== 0) throw new Error(response.stderr || `writeServiceConfig failed for ${serviceId}`)
+    }
+
+    async startService(serviceId) {
+        return this.runPlaybook('manage-service', {
+            stereum: { manage_service: { state: 'started', configuration: { id: serviceId } } }
+        })
+    }
+
+    async stopService(serviceId) {
+        return this.runPlaybook('manage-service', {
+            stereum: { manage_service: { state: 'stopped', configuration: { id: serviceId } } }
+        })
+    }
+
+    async runPlaybook(role, extraVars = {}) {
+        if (!this.settings) await this.fetchSettings()
+
+        const controlsPath = this.settings?.stereum_settings?.settings?.controls_install_path
+        if (!controlsPath) throw new Error('controls_install_path not found in stereum settings')
+
+        const vars = JSON.stringify({ stereum_role: role, ...extraVars })
+        const escaped = vars.replace(/'/g, `'"'"'`)
+        const command = `ANSIBLE_PYTHON_INTERPRETER=auto_silent ansible-playbook --connection=local --inventory 127.0.0.1, --extra-vars '${escaped}' ${controlsPath}/ansible/controls/genericPlaybook.yaml`
+
+        const response = await this.sshService.exec(command, true)
+        if (response.rc !== null && response.rc !== 0) throw new Error(response.stderr || response.stdout || `Playbook '${role}' failed`)
+        return response
     }
 
     disconnect() {

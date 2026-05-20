@@ -47,6 +47,39 @@ export function initializeIpcHandlers() {
         }
     });
 
+    ipcMain.handle('start-service', async (_, nodeId, serviceId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.startService(serviceId)
+        } catch (error) {
+            log.error('start-service error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('stop-service', async (_, nodeId, serviceId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.stopService(serviceId)
+        } catch (error) {
+            log.error('stop-service error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('get-container-statuses', async (_, nodeId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.fetchContainerStatuses()
+        } catch (error) {
+            log.error('get-container-statuses error:', error)
+            throw error
+        }
+    });
+
     ipcMain.handle('get-raw-service-config', async (_, nodeId, serviceId) => {
         try {
             const node = nodeManager.findNode(nodeId)
