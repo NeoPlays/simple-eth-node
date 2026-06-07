@@ -50,6 +50,14 @@
                             >
                                 {{ pending.has(service.id) ? '…' : isRunning(service) ? 'Stop' : 'Start' }}
                             </button>
+                            <button
+                                v-if="isRunning(service)"
+                                class="btn-service-action btn-restart"
+                                @click="restartService(service)"
+                                :disabled="pending.has(service.id)"
+                            >
+                                {{ pending.has(service.id) ? '…' : 'Restart' }}
+                            </button>
                             <button class="btn-edit" @click="editService(service.id)" :disabled="pending.has(service.id)">Edit</button>
                         </div>
                         <span class="service-image">
@@ -116,6 +124,17 @@ async function toggleService(service) {
     pending.add(serviceId)
     try {
         await window.api.invoke(isRunning(service) ? 'stop-service' : 'start-service', route.params.id, serviceId)
+        await refreshContainerStatuses()
+    } finally {
+        pending.delete(serviceId)
+    }
+}
+
+async function restartService(service) {
+    const serviceId = service.id
+    pending.add(serviceId)
+    try {
+        await window.api.invoke('restart-service', route.params.id, serviceId)
         await refreshContainerStatuses()
     } finally {
         pending.delete(serviceId)
@@ -338,6 +357,13 @@ onUnmounted(() => clearInterval(statusInterval))
     border-color: #e06c75;
 }
 .btn-stop:hover:not(:disabled) { background-color: rgba(224, 108, 117, 0.1); }
+
+.btn-restart {
+    background-color: transparent;
+    color: #e5c07b;
+    border-color: #e5c07b;
+}
+.btn-restart:hover:not(:disabled) { background-color: rgba(229, 192, 123, 0.1); }
 
 .btn-edit {
     padding: 4px 10px;

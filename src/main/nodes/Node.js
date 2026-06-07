@@ -114,6 +114,12 @@ export class Node {
         })
     }
 
+    async restartService(serviceId) {
+        return this.runPlaybook('manage-service', {
+            stereum: { manage_service: { state: 'restarted', configuration: { id: serviceId } } }
+        })
+    }
+
     async runPlaybook(role, extraVars = {}) {
         if (!this.settings) await this.fetchSettings()
 

@@ -69,6 +69,17 @@ export function initializeIpcHandlers() {
         }
     });
 
+    ipcMain.handle('restart-service', async (_, nodeId, serviceId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.restartService(serviceId)
+        } catch (error) {
+            log.error('restart-service error:', error)
+            throw error
+        }
+    });
+
     ipcMain.handle('get-container-statuses', async (_, nodeId) => {
         try {
             const node = nodeManager.findNode(nodeId)
