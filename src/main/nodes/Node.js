@@ -144,11 +144,11 @@ export class Node {
         if (!this.services || this.services.length === 0) {
             await this.fetchServices();
         }
-        for (const service of this.services) {
+        await Promise.all(this.services.map(async (service) => {
             const response = await this.sshService.exec(`cat /etc/stereum/services/${service.id}.yaml`);
             if (response.rc !== 0) throw new Error(response.stderr || `fetchServiceConfig failed for ${service.id}`);
             service.config = YAML.parse(response.stdout);
-        }
+        }));
         return this.services;
     }
 }
