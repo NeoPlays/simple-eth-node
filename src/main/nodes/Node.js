@@ -25,6 +25,7 @@ export class Node {
             id: this.id,
             name: this.sshService.SSHParams.name,
             host: this.sshService.SSHParams.host,
+            connected: this.sshService.connections.length > 0,
         }
     }
 

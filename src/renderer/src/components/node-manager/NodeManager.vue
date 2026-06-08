@@ -15,7 +15,10 @@
                 @click="router.push(`/node/${node.id}`)"
             >
                 <span class="node-name">{{ node.name }}</span>
-                <span class="node-host">{{ node.host }}</span>
+                <div class="node-card-right">
+                    <span class="node-host">{{ node.host }}</span>
+                    <span class="connection-badge" :class="node.connected ? 'connected' : 'disconnected'" :title="node.connected ? 'Connected' : 'Disconnected'"></span>
+                </div>
             </div>
         </div>
     </div>
@@ -94,11 +97,26 @@ onMounted(() => refreshNodes())
     color: var(--ev-c-text-1);
 }
 
+.node-card-right {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+
 .node-host {
     font-size: 12px;
     color: var(--ev-c-text-3);
     font-family: ui-monospace, monospace;
 }
+
+.connection-badge {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.connection-badge.connected { background-color: #4CAF50; }
+.connection-badge.disconnected { background-color: #e05252; }
 
 .empty {
     font-size: 14px;
