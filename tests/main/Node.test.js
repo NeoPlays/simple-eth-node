@@ -1,0 +1,314 @@
+import { describe, it, expect, beforeEach, vi } from 'vitest'
+
+vi.mock('@main/ssh/SSHService', () => {
+    class SSHParams {
+        constructor(host, port, username, password, privateKey, passphrase) {
+            this.name = ''
+            this.host = host
+            this.port = port
+            this.username = username
+            this.password = password
+            this.privateKey = privateKey
+            this.passphrase = passphrase
+        }
+        getConnectionParams() {
+            return { name: this.name, host: this.host, port: this.port, username: this.username, password: this.password, privateKey: this.privateKey, passphrase: this.passphrase }
+        }
+        setHostName(name) { this.name = name }
+    }
+    class SSHService {
+        constructor(params) {
+            this.SSHParams = params
+            this.connections = []
+            this.exec = vi.fn()
+            this.disconnect = vi.fn(() => { this.connections = [] })
+            this.connect = vi.fn()
+        }
+    }
+    return { SSHService, SSHParams }
+})
+
+vi.mock('electron-log', () => ({ default: { debug: vi.fn(), info: vi.fn(), error: vi.fn(), warn: vi.fn() } }))
+
+import { Node } from '@main/nodes/Node'
+
+const creds = { host: '1.2.3.4', port: 22, username: 'root', password: 'p', privateKey: '/fake/key', passphrase: '' }
+
+function ok(stdout = '', stderr = '') { return { rc: 0, stdout, stderr } }
+function fail(stderr = 'boom') { return { rc: 1, stdout: '', stderr } }
+
+describe('Node', () => {
+    let node
+    beforeEach(() => {
+        node = new Node(creds)
+    })
+
+    describe('constructor', () => {
+        it('generates a UUID id', () => {
+            expect(node.id).toMatch(/^[0-9a-f-]{36}$/)
+        })
+        it('creates distinct ids per instance', () => {
+            const a = new Node(creds), b = new Node(creds)
+            expect(a.id).not.toBe(b.id)
+        })
+        it('initializes settings null and services empty', () => {
+            expect(node.settings).toBeNull()
+            expect(node.services).toEqual([])
+        })
+        it('wires SSHService with credentials', () => {
+            expect(node.sshService.SSHParams.host).toBe('1.2.3.4')
+            expect(node.sshService.SSHParams.privateKey).toBe('/fake/key')
+        })
+    })
+
+    describe('toListDTO', () => {
+        it('returns lightweight DTO with connected=false when no connections', () => {
+            node.sshService.SSHParams.name = 'mynode'
+            expect(node.toListDTO()).toEqual({ id: node.id, name: 'mynode', host: '1.2.3.4', connected: false })
+        })
+        it('reports connected=true when connections exist', () => {
+            node.sshService.connections = [{}]
+            expect(node.toListDTO().connected).toBe(true)
+        })
+    })
+
+    describe('fetchSettings', () => {
+        it('parses YAML from stereum.yaml', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok('stereum_settings:\n  settings:\n    controls_install_path: /opt/stereum\n'))
+            const s = await node.fetchSettings()
+            expect(s.stereum_settings.settings.controls_install_path).toBe('/opt/stereum')
+            expect(node.sshService.exec).toHaveBeenCalledWith('cat /etc/stereum/stereum.yaml')
+        })
+        it('caches result; does not re-exec on subsequent calls', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok('a: 1'))
+            await node.fetchSettings()
+            await node.fetchSettings()
+            expect(node.sshService.exec).toHaveBeenCalledTimes(1)
+        })
+        it('refreshes when refresh=true', async () => {
+            node.sshService.exec.mockResolvedValue(ok('a: 1'))
+            await node.fetchSettings()
+            await node.fetchSettings(true)
+            expect(node.sshService.exec).toHaveBeenCalledTimes(2)
+        })
+        it('throws on non-zero rc with stderr', async () => {
+            node.sshService.exec.mockResolvedValueOnce(fail('no perms'))
+            await expect(node.fetchSettings()).rejects.toThrow('no perms')
+        })
+    })
+
+    describe('fetchServices', () => {
+        it('parses service IDs, stripping .yaml + whitespace + blanks', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok('aaa.yaml\nbbb.yaml\n\n  ccc.yaml  \n'))
+            const services = await node.fetchServices()
+            expect(services).toEqual([{ id: 'aaa' }, { id: 'bbb' }, { id: 'ccc' }])
+        })
+        it('caches; refresh=true re-execs', async () => {
+            node.sshService.exec.mockResolvedValue(ok('aaa.yaml'))
+            await node.fetchServices()
+            await node.fetchServices()
+            expect(node.sshService.exec).toHaveBeenCalledTimes(1)
+            await node.fetchServices(true)
+            expect(node.sshService.exec).toHaveBeenCalledTimes(2)
+        })
+        it('throws on rc != 0', async () => {
+            node.sshService.exec.mockResolvedValueOnce(fail('denied'))
+            await expect(node.fetchServices()).rejects.toThrow('denied')
+        })
+    })
+
+    describe('fetchContainerStatuses', () => {
+        it('maps stereum-<uuid> container names to status objects', async () => {
+            const uuid = 'aaaaaaaa-0000-0000-0000-aaaaaaaaaaaa'
+            const line = JSON.stringify({ Names: `stereum-${uuid}`, State: 'running', Status: 'Up 5m', Image: 'geth:1.17' })
+            node.sshService.exec.mockResolvedValueOnce(ok(line))
+            const statuses = await node.fetchContainerStatuses()
+            expect(statuses[uuid]).toEqual({ state: 'running', status: 'Up 5m', image: 'geth:1.17' })
+        })
+        it('ignores containers without stereum-UUID name', async () => {
+            const line = JSON.stringify({ Names: 'random-container', State: 'running', Status: 'Up', Image: 'x' })
+            node.sshService.exec.mockResolvedValueOnce(ok(line))
+            const statuses = await node.fetchContainerStatuses()
+            expect(statuses).toEqual({})
+        })
+        it('skips malformed JSON lines without throwing', async () => {
+            const good = JSON.stringify({ Names: 'stereum-aaaaaaaa-0000-0000-0000-aaaaaaaaaaaa', State: 's', Status: 'st', Image: 'i' })
+            node.sshService.exec.mockResolvedValueOnce(ok('not json\n' + good + '\n}{broken{'))
+            const statuses = await node.fetchContainerStatuses()
+            expect(Object.keys(statuses)).toHaveLength(1)
+        })
+        it('throws on rc != 0', async () => {
+            node.sshService.exec.mockResolvedValueOnce(fail('docker dead'))
+            await expect(node.fetchContainerStatuses()).rejects.toThrow('docker dead')
+        })
+    })
+
+    describe('fetchRawServiceConfig', () => {
+        it('returns raw stdout for the YAML file', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok('id: abc'))
+            const raw = await node.fetchRawServiceConfig('abc')
+            expect(raw).toBe('id: abc')
+            expect(node.sshService.exec).toHaveBeenCalledWith('cat /etc/stereum/services/abc.yaml')
+        })
+        it('throws on failure', async () => {
+            node.sshService.exec.mockResolvedValueOnce(fail('nope'))
+            await expect(node.fetchRawServiceConfig('abc')).rejects.toThrow('nope')
+        })
+    })
+
+    describe('writeServiceConfig', () => {
+        it('base64-encodes content and pipes to sudo tee', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok())
+            await node.writeServiceConfig('abc', 'hello: world')
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            const expectedB64 = Buffer.from('hello: world').toString('base64')
+            expect(cmd).toContain(expectedB64)
+            expect(cmd).toContain('/etc/stereum/services/abc.yaml')
+            expect(cmd).toContain('sudo tee')
+            // useSudo=false so caller controls sudo
+            expect(node.sshService.exec.mock.calls[0][1]).toBe(false)
+        })
+        it('throws on rc != 0', async () => {
+            node.sshService.exec.mockResolvedValueOnce(fail('readonly fs'))
+            await expect(node.writeServiceConfig('abc', 'x')).rejects.toThrow('readonly fs')
+        })
+    })
+
+    describe('fetchServiceConfigs', () => {
+        it('populates config on each service in parallel', async () => {
+            node.services = [{ id: 'a' }, { id: 'b' }]
+            node.sshService.exec.mockImplementation((cmd) => {
+                if (cmd.includes('a.yaml')) return Promise.resolve(ok('id: a'))
+                if (cmd.includes('b.yaml')) return Promise.resolve(ok('id: b'))
+                return Promise.resolve(fail())
+            })
+            await node.fetchServiceConfigs()
+            expect(node.services[0].config).toEqual({ id: 'a' })
+            expect(node.services[1].config).toEqual({ id: 'b' })
+        })
+        it('fetches services first when empty', async () => {
+            node.sshService.exec
+                .mockResolvedValueOnce(ok('a.yaml')) // fetchServices
+                .mockResolvedValueOnce(ok('id: a')) // config for a
+            await node.fetchServiceConfigs()
+            expect(node.services).toEqual([{ id: 'a', config: { id: 'a' } }])
+        })
+        it('rejects if any config fetch fails', async () => {
+            node.services = [{ id: 'a' }]
+            node.sshService.exec.mockResolvedValueOnce(fail('gone'))
+            await expect(node.fetchServiceConfigs()).rejects.toThrow('gone')
+        })
+    })
+
+    describe('toDTO', () => {
+        it('returns full DTO including container state merged into services', async () => {
+            node.sshService.SSHParams.name = 'host1'
+            const svcId = 'aaaaaaaa-0000-0000-0000-aaaaaaaaaaaa'
+            node.sshService.exec.mockImplementation((cmd) => {
+                if (cmd.includes('stereum.yaml')) return Promise.resolve(ok('stereum_settings:\n  settings:\n    controls_install_path: /opt/stereum'))
+                if (cmd.startsWith('ls /etc/stereum/services')) return Promise.resolve(ok(`${svcId}.yaml`))
+                if (cmd.includes(`${svcId}.yaml`)) return Promise.resolve(ok(`id: ${svcId}\nservice: GethService`))
+                if (cmd.startsWith('docker ps')) {
+                    return Promise.resolve(ok(JSON.stringify({ Names: `stereum-${svcId}`, State: 'running', Status: 'Up', Image: 'geth' })))
+                }
+                return Promise.resolve(fail('unexpected: ' + cmd))
+            })
+            const dto = await node.toDTO()
+            expect(dto.id).toBe(node.id)
+            expect(dto.name).toBe('host1')
+            expect(dto.settings.stereum_settings.settings.controls_install_path).toBe('/opt/stereum')
+            expect(dto.services).toHaveLength(1)
+            expect(dto.services[0].container).toEqual({ state: 'running', status: 'Up', image: 'geth' })
+        })
+        it('sets container=null for services with no matching docker entry', async () => {
+            node.sshService.exec.mockImplementation((cmd) => {
+                if (cmd.includes('stereum.yaml')) return Promise.resolve(ok('a: 1'))
+                if (cmd.startsWith('ls')) return Promise.resolve(ok('xxxx.yaml'))
+                if (cmd.includes('xxxx.yaml')) return Promise.resolve(ok('id: xxxx'))
+                if (cmd.startsWith('docker')) return Promise.resolve(ok(''))
+                return Promise.resolve(fail())
+            })
+            const dto = await node.toDTO()
+            expect(dto.services[0].container).toBeNull()
+        })
+    })
+
+    describe('start/stop/restart Service', () => {
+        beforeEach(() => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.sshService.exec.mockResolvedValue(ok('ok'))
+        })
+        it('startService passes state=started', async () => {
+            await node.startService('svc-1')
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).toContain('"state":"started"')
+            expect(cmd).toContain('"id":"svc-1"')
+            expect(cmd).toContain('stereum_role')
+            expect(cmd).toContain('manage-service')
+        })
+        it('stopService passes state=stopped', async () => {
+            await node.stopService('svc-1')
+            expect(node.sshService.exec.mock.calls[0][0]).toContain('"state":"stopped"')
+        })
+        it('restartService passes state=restarted', async () => {
+            await node.restartService('svc-1')
+            expect(node.sshService.exec.mock.calls[0][0]).toContain('"state":"restarted"')
+        })
+    })
+
+    describe('runPlaybook', () => {
+        it('throws when controls_install_path missing', async () => {
+            node.settings = { stereum_settings: { settings: {} } }
+            await expect(node.runPlaybook('manage-service')).rejects.toThrow(/controls_install_path/)
+        })
+        it('fetches settings if not loaded', async () => {
+            node.sshService.exec
+                .mockResolvedValueOnce(ok('stereum_settings:\n  settings:\n    controls_install_path: /opt/stereum'))
+                .mockResolvedValueOnce(ok('done'))
+            await node.runPlaybook('update-services')
+            expect(node.sshService.exec).toHaveBeenCalledTimes(2)
+        })
+        it('builds an ansible-playbook command with extra-vars and the controls path', async () => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.sshService.exec.mockResolvedValueOnce(ok('done'))
+            await node.runPlaybook('update-services', { foo: 'bar' })
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).toContain('ansible-playbook')
+            expect(cmd).toContain('/opt/stereum/ansible/controls/genericPlaybook.yaml')
+            expect(cmd).toContain('--extra-vars')
+            expect(cmd).toContain('"stereum_role":"update-services"')
+            expect(cmd).toContain('"foo":"bar"')
+        })
+        it('escapes single quotes in extra-vars', async () => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.sshService.exec.mockResolvedValueOnce(ok('done'))
+            await node.runPlaybook('manage-service', { x: "it's broken" })
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            // Single quotes inside the JSON must be escaped using the '"'"' trick
+            expect(cmd).toContain(`'"'"'`)
+        })
+        it('uses sudo (useSudo=true) for the exec call', async () => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.sshService.exec.mockResolvedValueOnce(ok('done'))
+            await node.runPlaybook('manage-service')
+            expect(node.sshService.exec.mock.calls[0][1]).toBe(true)
+        })
+        it('treats rc=null as success (e.g. signal termination ignored)', async () => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.sshService.exec.mockResolvedValueOnce({ rc: null, stdout: 'fine', stderr: '' })
+            await expect(node.runPlaybook('manage-service')).resolves.toBeDefined()
+        })
+        it('throws on rc != 0', async () => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.sshService.exec.mockResolvedValueOnce({ rc: 2, stdout: '', stderr: 'fail' })
+            await expect(node.runPlaybook('manage-service')).rejects.toThrow('fail')
+        })
+    })
+
+    describe('disconnect', () => {
+        it('delegates to sshService.disconnect', () => {
+            node.disconnect()
+            expect(node.sshService.disconnect).toHaveBeenCalledTimes(1)
+        })
+    })
+})
