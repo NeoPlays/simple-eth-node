@@ -23,6 +23,9 @@
         "build:mac": "npm run build && electron-builder --mac",
         "build:linux": "npm run build && electron-builder --linux"
     },
+    "overrides": {
+        "nan": "github:gdavidkov/nan#fix/external-value-v8-13"
+    },
     "dependencies": {
         "@electron-toolkit/preload": "^3.0.2",
         "@electron-toolkit/utils": "^4.0.0",
