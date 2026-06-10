@@ -45,6 +45,7 @@ export class SSHService {
     static KEEPALIVE_INTERVAL_MS = 10_000
     static KEEPALIVE_COUNT_MAX = 3
     static READY_TIMEOUT_MS = 15_000
+    static RECONNECT_DELAYS_MS = [2_000, 5_000, 15_000, 30_000, 60_000]
 
     constructor(SSHParams, onStateChange = null) {
         this.connections = []
@@ -53,22 +54,71 @@ export class SSHService {
         this._onStateChange = onStateChange
         this._lastState = null
         this._reconnecting = false
+        this._reconnectAbort = null
     }
 
     async reconnect() {
-        if (this._reconnecting || this._reachable) return this._reachable
+        this._reconnectAbort?.abort()
+        if (this._reachable) return true
+        const abort = new AbortController()
+        this._reconnectAbort = abort
         this._reconnecting = true
         this._emitState('reconnecting')
         try {
             await this.connect()
             return true
         } catch (e) {
-            log.warn('SSH :: RECONNECT FAILED ::', e?.message || e)
+            log.warn('SSH :: reconnect failed:', e?.message || e)
+            if (!abort.signal.aborted) this._emitState('disconnected')
+            return false
+        } finally {
+            if (this._reconnectAbort === abort) {
+                this._reconnecting = false
+                this._reconnectAbort = null
+            }
+        }
+    }
+
+    async _reconnectWithBackoff() {
+        this._reconnectAbort?.abort()
+        if (this._reachable) return true
+        const abort = new AbortController()
+        this._reconnectAbort = abort
+        this._reconnecting = true
+        this._emitState('reconnecting')
+        const delays = SSHService.RECONNECT_DELAYS_MS
+        try {
+            for (let i = 0; i < delays.length; i++) {
+                try {
+                    await this._sleep(delays[i], abort.signal)
+                } catch {
+                    return false
+                }
+                try {
+                    await this.connect()
+                    return true
+                } catch (e) {
+                    log.warn(`SSH :: backoff ${i + 1}/${delays.length} failed: ${e?.message || e}`)
+                }
+            }
             this._emitState('disconnected')
             return false
         } finally {
-            this._reconnecting = false
+            if (this._reconnectAbort === abort) {
+                this._reconnecting = false
+                this._reconnectAbort = null
+            }
         }
+    }
+
+    _sleep(ms, signal) {
+        return new Promise((resolve, reject) => {
+            const t = setTimeout(resolve, ms)
+            signal.addEventListener('abort', () => {
+                clearTimeout(t)
+                reject(new Error('aborted'))
+            }, { once: true })
+        })
     }
 
     _emitState(state) {
@@ -156,6 +206,7 @@ export class SSHService {
 
     disconnect() {
         this._reachable = false
+        this._reconnectAbort?.abort()
         this.connections.forEach(c => c.conn.end())
         this.connections = []
         this._emitState('disconnected')
@@ -172,7 +223,7 @@ export class SSHService {
                     const wasConnected = this._lastState === 'connected'
                     this._reachable = false
                     if (wasConnected && !this._reconnecting) {
-                        this.reconnect()
+                        this._reconnectWithBackoff()
                     } else if (!this._reconnecting) {
                         this._emitState('disconnected')
                     }
