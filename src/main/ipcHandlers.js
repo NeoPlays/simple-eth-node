@@ -16,6 +16,14 @@ export function initializeIpcHandlers() {
 
     // IPC NodeManager
     ipcMain.handle('ssh-login', (_, credentials) => {
+        const existing = nodeManager.findNodeByEndpoint(credentials.host, credentials.port, credentials.username)
+        if (existing) {
+            return Promise.resolve({
+                code: 2,
+                message: `Already connected to ${credentials.username}@${credentials.host}:${credentials.port}`,
+                nodeId: existing.id,
+            })
+        }
         const node = new Node(credentials)
         node.onStatusChange((status) => {
             for (const w of BrowserWindow.getAllWindows()) {

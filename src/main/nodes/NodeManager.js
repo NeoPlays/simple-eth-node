@@ -21,6 +21,14 @@ export class NodeManager {
         return this.nodes.find(node => node.id === nodeId) ?? null
     }
 
+    findNodeByEndpoint(host, port, username) {
+        return this.nodes.find(node =>
+            node.sshService.SSHParams.host === host &&
+            node.sshService.SSHParams.port === port &&
+            node.sshService.SSHParams.username === username
+        ) ?? null
+    }
+
     getNode(nodeId) {
         const node = this.findNode(nodeId)
         return node ? node.toDTO() : null
