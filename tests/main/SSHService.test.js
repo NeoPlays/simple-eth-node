@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { EventEmitter } from 'events'
 
 vi.mock('fs', () => {
@@ -16,7 +16,8 @@ const { FakeClient, FakeStream } = vi.hoisted(() => {
         constructor() {
             super()
             FakeClient.instances.push(this)
-            this.connect = (..._a) => {}
+            this.connectArgs = []
+            this.connect = (...a) => { this.connectArgs.push(a) }
             this.end = (..._a) => {}
             this.exec = (..._a) => {} // overridden per-test via mockImplementationOnce-like pattern
         }
@@ -56,7 +57,10 @@ describe('SSHConnection', () => {
 })
 
 describe('SSHService', () => {
-    beforeEach(() => { FakeClient.instances.length = 0 })
+    beforeEach(() => {
+        FakeClient.instances.length = 0
+        vi.useRealTimers() // guard against any prior test leaving fake timers active
+    })
 
     describe('connect', () => {
         it('resolves on ready and pushes a connection to the pool', async () => {
@@ -103,30 +107,37 @@ describe('SSHService', () => {
         })
     })
 
-    describe('getConnection', () => {
+    describe('_getConnection', () => {
         it('returns an existing under-cap connection and bumps sessionCount', async () => {
             const svc = new SSHService(makeParams())
             const fakeConn = { conn: {}, sessionCount: 1 }
             svc.connections = [fakeConn]
-            const got = await svc.getConnection()
+            const got = await svc._getConnection()
             expect(got).toBe(fakeConn)
             expect(fakeConn.sessionCount).toBe(2)
         })
 
-        it('opens a new connection when none exist', async () => {
+        it('fails fast with "SSH connection unavailable" when pool empty and not reachable', async () => {
             const svc = new SSHService(makeParams())
+            await expect(svc._getConnection()).rejects.toMatchObject({ code: 1, message: /unavailable/i })
+        })
+
+        it('opens a new connection when none exist but service is reachable', async () => {
+            const svc = new SSHService(makeParams())
+            svc._reachable = true
             const spy = vi.spyOn(svc, 'connect').mockImplementation(async () => {
                 svc.connections.push({ conn: {}, sessionCount: 0 })
             })
-            const got = await svc.getConnection()
+            const got = await svc._getConnection()
             expect(spy).toHaveBeenCalled()
             expect(got.sessionCount).toBe(1)
         })
 
         it('throws when connect() succeeds but no connection becomes available', async () => {
             const svc = new SSHService(makeParams())
+            svc._reachable = true
             vi.spyOn(svc, 'connect').mockResolvedValue()
-            await expect(svc.getConnection()).rejects.toThrow(/No available SSH connection/)
+            await expect(svc._getConnection()).rejects.toThrow(/No available SSH connection/)
         })
     })
 
@@ -205,6 +216,264 @@ describe('SSHService', () => {
             expect(end1).toHaveBeenCalled()
             expect(end2).toHaveBeenCalled()
             expect(svc.connections).toEqual([])
+        })
+
+        it('sets _reachable=false and emits disconnected state', () => {
+            const onState = vi.fn()
+            const svc = new SSHService(makeParams(), onState)
+            svc._reachable = true
+            svc._lastState = 'connected'
+            svc.disconnect()
+            expect(svc._reachable).toBe(false)
+            expect(onState).toHaveBeenLastCalledWith('disconnected')
+        })
+
+        it('aborts any in-flight reconnect cycle', () => {
+            const svc = new SSHService(makeParams())
+            const abort = new AbortController()
+            const abortSpy = vi.spyOn(abort, 'abort')
+            svc._reconnectAbort = abort
+            svc.disconnect()
+            expect(abortSpy).toHaveBeenCalled()
+        })
+    })
+
+    describe('connect — keepalive & state', () => {
+        it('passes keepaliveInterval / keepaliveCountMax / readyTimeout to ssh2.connect', async () => {
+            const svc = new SSHService(makeParams())
+            const p = svc.connect()
+            const client = FakeClient.instances[0]
+            driveReady(client)
+            await p
+            const opts = client.connectArgs[0][0]
+            expect(opts.keepaliveInterval).toBe(SSHService.KEEPALIVE_INTERVAL_MS)
+            expect(opts.keepaliveCountMax).toBe(SSHService.KEEPALIVE_COUNT_MAX)
+            expect(opts.readyTimeout).toBe(SSHService.READY_TIMEOUT_MS)
+        })
+
+        it('invokes onStateChange("connected") on ready and ("disconnected") on close', async () => {
+            const onState = vi.fn()
+            const svc = new SSHService(makeParams(), onState)
+            const p = svc.connect()
+            const client = FakeClient.instances[0]
+            driveReady(client)
+            await p
+            expect(onState).toHaveBeenCalledWith('connected')
+            expect(svc._reachable).toBe(true)
+            // Pre-set state to 'connected' guard against backoff trigger from dropConnection
+            // (we want the disconnected emit path, not the auto-reconnect path)
+            svc._lastState = 'connected'
+            svc._reconnecting = true // skip auto reconnect for this test
+            client.emit('close')
+            // The branch: !this._reconnecting → emit 'disconnected'. But we set _reconnecting=true to skip backoff.
+            // Re-test without that flag to verify disconnected when wasConnected=false:
+            const svc2 = new SSHService(makeParams(), onState)
+            svc2._lastState = null
+            // simulate a connection drop without prior 'connected' state
+            // (i.e. initial connect failure path)
+            const p2 = svc2.connect()
+            const c2 = FakeClient.instances[FakeClient.instances.length - 1]
+            setImmediate(() => c2.emit('error', new Error('refused')))
+            await p2.catch(() => {})
+            // dropConnection ran; wasConnected was false, _reconnecting was false → 'disconnected' emit
+            expect(onState).toHaveBeenCalledWith('disconnected')
+        })
+
+        it('_emitState dedups identical consecutive states', () => {
+            const onState = vi.fn()
+            const svc = new SSHService(makeParams(), onState)
+            svc._emitState('connected')
+            svc._emitState('connected')
+            svc._emitState('reconnecting')
+            svc._emitState('reconnecting')
+            expect(onState).toHaveBeenCalledTimes(2)
+            expect(onState.mock.calls).toEqual([['connected'], ['reconnecting']])
+        })
+
+        it('removes the right entry on close (uses sshConn.id, not conn.id)', async () => {
+            // Two sequential connects should both leave the pool empty after both close
+            const svc = new SSHService(makeParams())
+            svc._reconnecting = true // suppress auto-reconnect on drop for test isolation
+
+            const p1 = svc.connect()
+            driveReady(FakeClient.instances[0], 'h1')
+            await p1
+            // Open a second connection (manually push, since exec would normally do it)
+            const p2 = svc.connect()
+            driveReady(FakeClient.instances[1], 'h1')
+            await p2
+            expect(svc.connections).toHaveLength(2)
+
+            FakeClient.instances[0].emit('close')
+            expect(svc.connections).toHaveLength(1)
+            FakeClient.instances[1].emit('close')
+            expect(svc.connections).toHaveLength(0)
+        })
+    })
+
+    describe('exec — timeout', () => {
+        beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }) })
+        afterEach(() => { vi.useRealTimers() })
+
+        it('rejects with {rc:-1, "SSH exec timeout"} after EXEC_TIMEOUT_MS with no stream activity', async () => {
+            const svc = new SSHService(makeParams())
+            svc.connections = [{
+                conn: { exec: vi.fn() }, // never invokes callback
+                sessionCount: 0,
+            }]
+            const promise = svc.exec('hang', false)
+            // Attach the assertion's catch handler before advancing time, so the rejection
+            // never spends a microtask as "unhandled" between fire and await.
+            const assertion = expect(promise).rejects.toMatchObject({ rc: -1, message: /timeout/i })
+            await vi.advanceTimersByTimeAsync(SSHService.EXEC_TIMEOUT_MS)
+            await assertion
+        })
+
+        it('clears the timeout on normal stream close so no late rejection happens', async () => {
+            const svc = new SSHService(makeParams())
+            const stream = new FakeStream()
+            svc.connections = [{
+                conn: { exec: (cmd, cb) => { cb(null, stream) } },
+                sessionCount: 0,
+            }]
+            const promise = svc.exec('ok', false)
+            // Allow the exec callback (scheduled via the async executor) to run, then emit close.
+            await vi.advanceTimersByTimeAsync(0)
+            stream.emit('close', 0)
+            const r = await promise
+            expect(r.rc).toBe(0)
+            // advance past the timeout — should not double-reject
+            await vi.advanceTimersByTimeAsync(SSHService.EXEC_TIMEOUT_MS + 1)
+        })
+    })
+
+    describe('reconnect (single attempt)', () => {
+        it('returns true and emits reconnecting then connected on success', async () => {
+            const onState = vi.fn()
+            const svc = new SSHService(makeParams(), onState)
+            const p = svc.reconnect()
+            const client = FakeClient.instances[0]
+            driveReady(client)
+            const ok = await p
+            expect(ok).toBe(true)
+            expect(onState).toHaveBeenCalledWith('reconnecting')
+            expect(onState).toHaveBeenCalledWith('connected')
+        })
+
+        it('returns false and emits disconnected on failure', async () => {
+            const onState = vi.fn()
+            const svc = new SSHService(makeParams(), onState)
+            const p = svc.reconnect()
+            const client = FakeClient.instances[0]
+            setImmediate(() => client.emit('error', new Error('refused')))
+            const ok = await p
+            expect(ok).toBe(false)
+            expect(onState).toHaveBeenCalledWith('reconnecting')
+            expect(onState).toHaveBeenCalledWith('disconnected')
+        })
+
+        it('short-circuits to true when already reachable', async () => {
+            const svc = new SSHService(makeParams())
+            svc._reachable = true
+            const spy = vi.spyOn(svc, 'connect')
+            const ok = await svc.reconnect()
+            expect(ok).toBe(true)
+            expect(spy).not.toHaveBeenCalled()
+        })
+
+        it('aborts an in-flight reconnect when called again', async () => {
+            const svc = new SSHService(makeParams())
+            const first = new AbortController()
+            const abortSpy = vi.spyOn(first, 'abort')
+            svc._reconnectAbort = first
+            const p = svc.reconnect()
+            // immediately kick off the connect's error path so the second call doesn't hang the test
+            const client = FakeClient.instances[0]
+            setImmediate(() => client.emit('error', new Error('boom')))
+            await p
+            expect(abortSpy).toHaveBeenCalled()
+        })
+    })
+
+    describe('_reconnectWithBackoff', () => {
+        beforeEach(() => { vi.useFakeTimers() })
+        afterEach(() => { vi.useRealTimers() })
+
+        it('waits the first delay (2s) before the first attempt', async () => {
+            const svc = new SSHService(makeParams())
+            const connectSpy = vi.spyOn(svc, 'connect').mockResolvedValue({ code: 0, message: 'ok' })
+            // Trick: set _reachable=true after connect resolves, so the cycle ends
+            connectSpy.mockImplementation(async () => { svc._reachable = true })
+
+            const p = svc._reconnectWithBackoff()
+            // Not yet — first delay is 2000ms
+            await vi.advanceTimersByTimeAsync(1999)
+            expect(connectSpy).not.toHaveBeenCalled()
+            await vi.advanceTimersByTimeAsync(1)
+            await p
+            expect(connectSpy).toHaveBeenCalledTimes(1)
+        })
+
+        it('cycles through all delays and emits disconnected after final failure', async () => {
+            const svc = new SSHService(makeParams())
+            const onState = vi.fn()
+            svc._onStateChange = onState
+            const connectSpy = vi.spyOn(svc, 'connect').mockRejectedValue(new Error('nope'))
+
+            const p = svc._reconnectWithBackoff()
+            // Advance through the full schedule
+            const total = SSHService.RECONNECT_DELAYS_MS.reduce((a, b) => a + b, 0)
+            await vi.advanceTimersByTimeAsync(total + 100)
+            const result = await p
+            expect(result).toBe(false)
+            expect(connectSpy).toHaveBeenCalledTimes(SSHService.RECONNECT_DELAYS_MS.length)
+            expect(onState).toHaveBeenCalledWith('reconnecting')
+            expect(onState).toHaveBeenCalledWith('disconnected')
+        })
+
+        it('aborts cleanly when the abort signal fires mid-sleep', async () => {
+            const svc = new SSHService(makeParams())
+            const connectSpy = vi.spyOn(svc, 'connect').mockRejectedValue(new Error('x'))
+            const p = svc._reconnectWithBackoff()
+            // mid-first-delay, abort
+            await vi.advanceTimersByTimeAsync(500)
+            svc._reconnectAbort.abort()
+            const result = await p
+            expect(result).toBe(false)
+            expect(connectSpy).not.toHaveBeenCalled()
+        })
+    })
+
+    describe('dropConnection auto-trigger', () => {
+        it('starts _reconnectWithBackoff when the established connection drops', async () => {
+            const onState = vi.fn()
+            const svc = new SSHService(makeParams(), onState)
+            // Stub the backoff so we observe the trigger without running through delays
+            const backoffSpy = vi.spyOn(svc, '_reconnectWithBackoff').mockImplementation(async () => {
+                svc._reconnecting = true
+                svc._emitState('reconnecting')
+            })
+
+            const p = svc.connect()
+            driveReady(FakeClient.instances[0])
+            await p
+            expect(onState).toHaveBeenLastCalledWith('connected')
+
+            FakeClient.instances[0].emit('close')
+            expect(backoffSpy).toHaveBeenCalledTimes(1)
+            expect(onState).toHaveBeenCalledWith('reconnecting')
+        })
+
+        it('emits "disconnected" (no backoff) when an unestablished connection fails', async () => {
+            const onState = vi.fn()
+            const svc = new SSHService(makeParams(), onState)
+            const backoffSpy = vi.spyOn(svc, '_reconnectWithBackoff')
+            const p = svc.connect()
+            const client = FakeClient.instances[0]
+            setImmediate(() => client.emit('error', new Error('refused')))
+            await p.catch(() => {})
+            expect(backoffSpy).not.toHaveBeenCalled()
+            expect(onState).toHaveBeenCalledWith('disconnected')
         })
     })
 })

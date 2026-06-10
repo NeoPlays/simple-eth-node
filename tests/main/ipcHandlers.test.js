@@ -1,34 +1,45 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-const { handlers, fakeStorage, fakeNode, fakeNodeManager } = vi.hoisted(() => ({
-    handlers: {},
-    fakeStorage: {
-        importFromStereum: vi.fn(() => ['server-list']),
-        get: vi.fn(),
-        set: vi.fn(),
-    },
-    fakeNode: {
-        sshService: { connect: vi.fn() },
-        startService: vi.fn(),
-        stopService: vi.fn(),
-        restartService: vi.fn(),
-        fetchContainerStatuses: vi.fn(),
-        fetchRawServiceConfig: vi.fn(),
-        writeServiceConfig: vi.fn(),
-    },
-    fakeNodeManager: {
-        addNode: vi.fn(),
-        getAllNodes: vi.fn(),
-        getNode: vi.fn(),
-        findNode: vi.fn(),
-        disconnectNode: vi.fn(),
-    },
-}))
+const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeWindow, fakeBrowserWindow } = vi.hoisted(() => {
+    const send = vi.fn()
+    const fakeWindow = { webContents: { send } }
+    return {
+        handlers: {},
+        fakeStorage: {
+            importFromStereum: vi.fn(() => ['server-list']),
+            get: vi.fn(),
+            set: vi.fn(),
+        },
+        fakeNode: {
+            id: 'node-id',
+            sshService: { connect: vi.fn() },
+            onStatusChange: vi.fn(),
+            reconnect: vi.fn(),
+            startService: vi.fn(),
+            stopService: vi.fn(),
+            restartService: vi.fn(),
+            fetchContainerStatuses: vi.fn(),
+            fetchRawServiceConfig: vi.fn(),
+            writeServiceConfig: vi.fn(),
+        },
+        fakeNodeManager: {
+            addNode: vi.fn(),
+            getAllNodes: vi.fn(),
+            getNode: vi.fn(),
+            findNode: vi.fn(),
+            findNodeByEndpoint: vi.fn(),
+            disconnectNode: vi.fn(),
+        },
+        fakeWindow,
+        fakeBrowserWindow: { getAllWindows: vi.fn(() => [fakeWindow]) },
+    }
+})
 
 vi.mock('electron', () => ({
     ipcMain: {
         handle: vi.fn((channel, fn) => { handlers[channel] = fn }),
     },
+    BrowserWindow: fakeBrowserWindow,
 }))
 vi.mock('@main/store/StoreService', () => ({ default: fakeStorage }))
 vi.mock('@main/nodes/Node', () => ({ Node: function FakeNodeCtor() { return fakeNode } }))
@@ -56,6 +67,7 @@ describe('ipcHandlers', () => {
             'get-raw-service-config',
             'import-server-from-stereum',
             'ping',
+            'reconnect-node',
             'restart-service',
             'ssh-login',
             'start-service',
@@ -81,18 +93,63 @@ describe('ipcHandlers', () => {
     })
 
     it('ssh-login connects and adds node on success', async () => {
+        fakeNodeManager.findNodeByEndpoint.mockReturnValueOnce(null)
         fakeNode.sshService.connect.mockResolvedValueOnce({ code: 0, message: 'ok' })
-        const r = await handlers['ssh-login'](event, { host: 'h' })
+        const r = await handlers['ssh-login'](event, { host: 'h', port: 22, username: 'u' })
         expect(r).toEqual({ code: 0, message: 'ok' })
         expect(fakeNodeManager.addNode).toHaveBeenCalledWith(fakeNode)
     })
 
     it('ssh-login returns code 1 and does not add node on failure', async () => {
+        fakeNodeManager.findNodeByEndpoint.mockReturnValueOnce(null)
         fakeNode.sshService.connect.mockRejectedValueOnce(new Error('refused'))
-        const r = await handlers['ssh-login'](event, { host: 'h' })
+        const r = await handlers['ssh-login'](event, { host: 'h', port: 22, username: 'u' })
         expect(r.code).toBe(1)
         expect(r.message).toBe('refused')
         expect(fakeNodeManager.addNode).not.toHaveBeenCalled()
+    })
+
+    it('ssh-login returns code 2 and does not create a new node when endpoint is already connected', async () => {
+        fakeNodeManager.findNodeByEndpoint.mockReturnValueOnce({ id: 'existing' })
+        const r = await handlers['ssh-login'](event, { host: '1.1.1.1', port: 22, username: 'root' })
+        expect(r.code).toBe(2)
+        expect(r.nodeId).toBe('existing')
+        expect(r.message).toMatch(/already connected/i)
+        expect(fakeNode.sshService.connect).not.toHaveBeenCalled()
+        expect(fakeNodeManager.addNode).not.toHaveBeenCalled()
+    })
+
+    it('ssh-login subscribes onStatusChange and broadcasts node-status-changed to all windows', async () => {
+        fakeNodeManager.findNodeByEndpoint.mockReturnValueOnce(null)
+        fakeNode.sshService.connect.mockResolvedValueOnce({ code: 0 })
+        await handlers['ssh-login'](event, { host: 'h', port: 22, username: 'u' })
+        expect(fakeNode.onStatusChange).toHaveBeenCalledTimes(1)
+        // Invoke the registered callback as if SSHService emitted a state change
+        const cb = fakeNode.onStatusChange.mock.calls[0][0]
+        cb('reconnecting')
+        expect(fakeBrowserWindow.getAllWindows).toHaveBeenCalled()
+        expect(fakeWindow.webContents.send).toHaveBeenCalledWith('node-status-changed', { id: fakeNode.id, status: 'reconnecting' })
+    })
+
+    it('reconnect-node delegates to node.reconnect() and returns its result', async () => {
+        fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+        fakeNode.reconnect.mockResolvedValueOnce(true)
+        const r = await handlers['reconnect-node'](event, 'node-id')
+        expect(r).toBe(true)
+        expect(fakeNode.reconnect).toHaveBeenCalledTimes(1)
+    })
+
+    it('reconnect-node returns false when node missing', async () => {
+        fakeNodeManager.findNode.mockReturnValueOnce(null)
+        const r = await handlers['reconnect-node'](event, 'missing')
+        expect(r).toBe(false)
+    })
+
+    it('reconnect-node returns false when reconnect throws', async () => {
+        fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+        fakeNode.reconnect.mockRejectedValueOnce(new Error('boom'))
+        const r = await handlers['reconnect-node'](event, 'node-id')
+        expect(r).toBe(false)
     })
 
     it('get-all-nodes delegates to nodeManager', async () => {

@@ -4,6 +4,7 @@ import { NodeManager } from '@main/nodes/NodeManager'
 function makeNode(id, overrides = {}) {
     return {
         id,
+        sshService: { SSHParams: { host: 'h', port: 22, username: 'u' } },
         disconnect: vi.fn(),
         toListDTO: vi.fn(() => ({ id, name: `n-${id}`, host: 'h', connected: false })),
         toDTO: vi.fn(() => Promise.resolve({ id, services: [] })),
@@ -84,5 +85,32 @@ describe('NodeManager', () => {
 
     it('getNode returns null for unknown id', () => {
         expect(mgr.getNode('missing')).toBeNull()
+    })
+
+    describe('findNodeByEndpoint', () => {
+        it('matches on host+port+username', () => {
+            mgr.addNode(makeNode('a', { sshService: { SSHParams: { host: '1.1.1.1', port: 22, username: 'root' } } }))
+            mgr.addNode(makeNode('b', { sshService: { SSHParams: { host: '2.2.2.2', port: 22, username: 'root' } } }))
+            const found = mgr.findNodeByEndpoint('2.2.2.2', 22, 'root')
+            expect(found.id).toBe('b')
+        })
+
+        it('returns null when no node matches', () => {
+            mgr.addNode(makeNode('a', { sshService: { SSHParams: { host: '1.1.1.1', port: 22, username: 'root' } } }))
+            expect(mgr.findNodeByEndpoint('9.9.9.9', 22, 'root')).toBeNull()
+        })
+
+        it('distinguishes by port (same host, different port)', () => {
+            mgr.addNode(makeNode('a', { sshService: { SSHParams: { host: 'h', port: 22, username: 'u' } } }))
+            mgr.addNode(makeNode('b', { sshService: { SSHParams: { host: 'h', port: 2222, username: 'u' } } }))
+            expect(mgr.findNodeByEndpoint('h', 2222, 'u').id).toBe('b')
+            expect(mgr.findNodeByEndpoint('h', 22, 'u').id).toBe('a')
+        })
+
+        it('distinguishes by username (same host+port, different user)', () => {
+            mgr.addNode(makeNode('a', { sshService: { SSHParams: { host: 'h', port: 22, username: 'root' } } }))
+            mgr.addNode(makeNode('b', { sshService: { SSHParams: { host: 'h', port: 22, username: 'admin' } } }))
+            expect(mgr.findNodeByEndpoint('h', 22, 'admin').id).toBe('b')
+        })
     })
 })

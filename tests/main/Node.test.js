@@ -17,12 +17,14 @@ vi.mock('@main/ssh/SSHService', () => {
         setHostName(name) { this.name = name }
     }
     class SSHService {
-        constructor(params) {
+        constructor(params, onStateChange) {
             this.SSHParams = params
             this.connections = []
+            this.onStateChange = onStateChange // expose for test inspection
             this.exec = vi.fn()
             this.disconnect = vi.fn(() => { this.connections = [] })
             this.connect = vi.fn()
+            this.reconnect = vi.fn(async () => true)
         }
     }
     return { SSHService, SSHParams }
@@ -55,20 +57,69 @@ describe('Node', () => {
             expect(node.settings).toBeNull()
             expect(node.services).toEqual([])
         })
+        it('initializes status as "disconnected"', () => {
+            expect(node.status).toBe('disconnected')
+        })
         it('wires SSHService with credentials', () => {
             expect(node.sshService.SSHParams.host).toBe('1.2.3.4')
             expect(node.sshService.SSHParams.privateKey).toBe('/fake/key')
+        })
+        it('passes an onStateChange callback to SSHService that updates node.status', () => {
+            expect(typeof node.sshService.onStateChange).toBe('function')
+            node.sshService.onStateChange('connected')
+            expect(node.status).toBe('connected')
+            node.sshService.onStateChange('reconnecting')
+            expect(node.status).toBe('reconnecting')
+        })
+    })
+
+    describe('onStatusChange', () => {
+        it('notifies all registered listeners on status change', () => {
+            const a = vi.fn(), b = vi.fn()
+            node.onStatusChange(a)
+            node.onStatusChange(b)
+            node._setStatus('connected')
+            expect(a).toHaveBeenCalledWith('connected')
+            expect(b).toHaveBeenCalledWith('connected')
+        })
+
+        it('deduplicates no-op transitions', () => {
+            const cb = vi.fn()
+            node.onStatusChange(cb)
+            node._setStatus('disconnected') // already 'disconnected'
+            expect(cb).not.toHaveBeenCalled()
+        })
+
+        it('returns an unsubscribe function', () => {
+            const cb = vi.fn()
+            const off = node.onStatusChange(cb)
+            off()
+            node._setStatus('connected')
+            expect(cb).not.toHaveBeenCalled()
+        })
+
+        it('does not let one listener throwing stop others', () => {
+            const bad = vi.fn(() => { throw new Error('x') })
+            const good = vi.fn()
+            node.onStatusChange(bad)
+            node.onStatusChange(good)
+            expect(() => node._setStatus('connected')).not.toThrow()
+            expect(good).toHaveBeenCalled()
         })
     })
 
     describe('toListDTO', () => {
         it('returns lightweight DTO with connected=false when no connections', () => {
             node.sshService.SSHParams.name = 'mynode'
-            expect(node.toListDTO()).toEqual({ id: node.id, name: 'mynode', host: '1.2.3.4', connected: false })
+            expect(node.toListDTO()).toMatchObject({ id: node.id, name: 'mynode', host: '1.2.3.4', connected: false })
         })
         it('reports connected=true when connections exist', () => {
             node.sshService.connections = [{}]
             expect(node.toListDTO().connected).toBe(true)
+        })
+        it('includes the current status', () => {
+            node._setStatus('reconnecting')
+            expect(node.toListDTO().status).toBe('reconnecting')
         })
     })
 
@@ -309,6 +360,29 @@ describe('Node', () => {
         it('delegates to sshService.disconnect', () => {
             node.disconnect()
             expect(node.sshService.disconnect).toHaveBeenCalledTimes(1)
+        })
+    })
+
+    describe('reconnect', () => {
+        it('delegates to sshService.reconnect and returns its result', async () => {
+            node.sshService.reconnect.mockResolvedValueOnce(true)
+            const r = await node.reconnect()
+            expect(r).toBe(true)
+            expect(node.sshService.reconnect).toHaveBeenCalledTimes(1)
+        })
+    })
+
+    describe('toDTO status field', () => {
+        it('includes the current status in the full DTO', async () => {
+            node._setStatus('connected')
+            node.sshService.exec.mockImplementation((cmd) => {
+                if (cmd.includes('stereum.yaml')) return Promise.resolve({ rc: 0, stdout: 'a: 1', stderr: '' })
+                if (cmd.startsWith('ls')) return Promise.resolve({ rc: 0, stdout: '', stderr: '' })
+                if (cmd.startsWith('docker')) return Promise.resolve({ rc: 0, stdout: '', stderr: '' })
+                return Promise.resolve({ rc: 0, stdout: '', stderr: '' })
+            })
+            const dto = await node.toDTO()
+            expect(dto.status).toBe('connected')
         })
     })
 })
