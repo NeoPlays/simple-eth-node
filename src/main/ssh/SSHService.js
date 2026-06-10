@@ -41,26 +41,58 @@ export class SSHConnection {
 
 export class SSHService {
     static MAX_SESSION_COUNT = 5
-    constructor(SSHParams) {
+    static EXEC_TIMEOUT_MS = 15_000
+    static KEEPALIVE_INTERVAL_MS = 10_000
+    static KEEPALIVE_COUNT_MAX = 3
+    static READY_TIMEOUT_MS = 15_000
+
+    constructor(SSHParams, onStateChange = null) {
         this.connections = []
         this.SSHParams = SSHParams
+        this._reachable = false
+        this._onStateChange = onStateChange
+        this._lastState = null
+        this._reconnecting = false
     }
 
-    async getConnection(){
+    async reconnect() {
+        if (this._reconnecting || this._reachable) return this._reachable
+        this._reconnecting = true
+        this._emitState('reconnecting')
+        try {
+            await this.connect()
+            return true
+        } catch (e) {
+            log.warn('SSH :: RECONNECT FAILED ::', e?.message || e)
+            this._emitState('disconnected')
+            return false
+        } finally {
+            this._reconnecting = false
+        }
+    }
+
+    _emitState(state) {
+        if (state === this._lastState) return
+        this._lastState = state
+        try { this._onStateChange?.(state) } catch (e) { log.error('onStateChange error:', e) }
+    }
+
+    async _getConnection(){
         const conn = this.connections.find(c => c.sessionCount <= SSHService.MAX_SESSION_COUNT)
         if (conn) {
             conn.sessionCount++
             return conn
-        } else {
-            await this.connect()
-            const newConn = this.connections.find(c => c.sessionCount <= SSHService.MAX_SESSION_COUNT)
-            if (newConn) {
-                newConn.sessionCount++
-                return newConn
-            } else {
-                throw new Error('No available SSH connection')
-            }
         }
+        if (!this._reachable) {
+            throw { code: 1, message: 'SSH connection unavailable' }
+        }
+        await this.connect()
+        const newConn = this.connections.find(c => c.sessionCount <= SSHService.MAX_SESSION_COUNT)
+        if (newConn) {
+            newConn.sessionCount++
+            return newConn
+        }
+        throw new Error('No available SSH connection')
     }
 
     async exec(command, useSudo = true) {
@@ -69,7 +101,12 @@ export class SSHService {
         }
         log.debug('%cCOMMAND:%c', 'color: yellow', 'color: unset', command)
         return new Promise(async (resolve, reject) => {
-            const sshConn = await this.getConnection()
+            let sshConn
+            try {
+                sshConn = await this._getConnection()
+            } catch (err) {
+                return reject(err)
+            }
             const conn = sshConn.conn
             if (!conn) {
                 reject({code: 1, message: 'No SSH connection available'})
@@ -80,13 +117,30 @@ export class SSHService {
                 stdout: "",
                 stderr: "",
               };
+              let settled = false
+              let activeStream = null
+              const timer = setTimeout(() => {
+                if (settled) return
+                settled = true
+                log.warn('SSH :: EXEC TIMEOUT ::', command)
+                try { activeStream?.close() } catch { /* ignore */ }
+                reject({ rc: -1, code: 1, message: 'SSH exec timeout' })
+              }, SSHService.EXEC_TIMEOUT_MS)
+
               conn.exec(command, (err, stream) => {
                 if (err) {
+                  if (settled) return
+                  settled = true
+                  clearTimeout(timer)
                   log.error("ERROR:", err);
                   return reject(err);
                 }
+                activeStream = stream
                 stream
                   .on("close", (code) => {
+                    if (settled) return
+                    settled = true
+                    clearTimeout(timer)
                     data.rc = code;
                     resolve(data);
                   })
@@ -101,8 +155,10 @@ export class SSHService {
     }
 
     disconnect() {
+        this._reachable = false
         this.connections.forEach(c => c.conn.end())
         this.connections = []
+        this._emitState('disconnected')
     }
 
     async connect() {
@@ -110,9 +166,28 @@ export class SSHService {
             const conn = new Client()
             const sshConn = new SSHConnection(conn)
             const params = this.SSHParams.getConnectionParams()
-            conn.connect(params)
+            const dropConnection = () => {
+                this.connections = this.connections.filter(c => c.id !== sshConn.id)
+                if (this.connections.length === 0) {
+                    const wasConnected = this._lastState === 'connected'
+                    this._reachable = false
+                    if (wasConnected && !this._reconnecting) {
+                        this.reconnect()
+                    } else if (!this._reconnecting) {
+                        this._emitState('disconnected')
+                    }
+                }
+            }
+            conn.connect({
+                ...params,
+                keepaliveInterval: SSHService.KEEPALIVE_INTERVAL_MS,
+                keepaliveCountMax: SSHService.KEEPALIVE_COUNT_MAX,
+                readyTimeout: SSHService.READY_TIMEOUT_MS,
+            })
             conn.on('ready', async () => {
                 this.connections.push(sshConn)
+                this._reachable = true
+                this._emitState('connected')
                 if(!this.SSHParams.name){
                     const hostname = await this.exec('hostname')
                     this.SSHParams.setHostName(hostname.stdout ? hostname.stdout.trim() : 'Unknown')
@@ -121,15 +196,16 @@ export class SSHService {
             })
             conn.on('error', (err) => {
                 log.error('SSH :: ERROR :: ', err)
+                dropConnection()
                 reject({code: 1, message: 'SSH connection error', error: err})
             })
             conn.on('end', () => {
                 log.info('SSH :: END')
-                this.connections = this.connections.filter(c => c.conn.id !== sshConn.id)
+                dropConnection()
             })
             conn.on('close', () => {
                 log.info('SSH :: CLOSE')
-                this.connections = this.connections.filter(c => c.conn.id !== conn.id)
+                dropConnection()
             })
         })
     }

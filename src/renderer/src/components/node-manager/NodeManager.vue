@@ -12,12 +12,33 @@
                 class="node-card"
                 v-for="node in nodes"
                 :key="node.id"
-                @click="router.push(`/node/${node.id}`)"
+                @click="open(node)"
+                :class="{ disabled: node.status === 'reconnecting' }"
             >
                 <span class="node-name">{{ node.name }}</span>
                 <div class="node-card-right">
                     <span class="node-host">{{ node.host }}</span>
-                    <span class="connection-badge" :class="node.connected ? 'connected' : 'disconnected'" :title="node.connected ? 'Connected' : 'Disconnected'"></span>
+                    <span
+                        class="connection-badge"
+                        :class="node.status || (node.connected ? 'connected' : 'disconnected')"
+                        :title="statusLabel(node)"
+                    ></span>
+                    <button
+                        v-if="node.status === 'disconnected'"
+                        class="btn-row btn-reconnect"
+                        @click.stop="reconnect(node)"
+                        :disabled="pending.has(node.id)"
+                    >
+                        {{ pending.has(node.id) ? '…' : 'Reconnect' }}
+                    </button>
+                    <button
+                        class="btn-row btn-disconnect"
+                        @click.stop="disconnect(node)"
+                        :disabled="pending.has(node.id) || node.status === 'reconnecting'"
+                        :title="node.status === 'disconnected' ? 'Remove from list' : 'Disconnect'"
+                    >
+                        {{ node.status === 'disconnected' ? 'Remove' : 'Disconnect' }}
+                    </button>
                 </div>
             </div>
         </div>
@@ -25,7 +46,7 @@
 </template>
 
 <script setup>
-import { onMounted } from 'vue'
+import { onMounted, reactive } from 'vue'
 import { useNodesStore } from '@stores/useNodes'
 import { storeToRefs } from 'pinia'
 import { useRouter } from 'vue-router'
@@ -34,8 +55,32 @@ const router = useRouter()
 const store = useNodesStore()
 const { nodes } = storeToRefs(store)
 const { refreshNodes } = store
+const pending = reactive(new Set())
 
 onMounted(() => refreshNodes())
+
+function statusLabel(node) {
+    if (node.status === 'reconnecting') return 'Reconnecting…'
+    if (node.status === 'disconnected') return 'Disconnected'
+    return 'Connected'
+}
+
+function open(node) {
+    if (node.status === 'reconnecting') return
+    router.push(`/node/${node.id}`)
+}
+
+async function reconnect(node) {
+    pending.add(node.id)
+    try { await store.reconnectNode(node.id) }
+    finally { pending.delete(node.id) }
+}
+
+async function disconnect(node) {
+    pending.add(node.id)
+    try { await store.disconnectNode(node.id) }
+    finally { pending.delete(node.id) }
+}
 </script>
 
 <style scoped>
@@ -117,6 +162,42 @@ onMounted(() => refreshNodes())
 }
 .connection-badge.connected { background-color: #4CAF50; }
 .connection-badge.disconnected { background-color: #e05252; }
+.connection-badge.reconnecting {
+    background-color: #e5c07b;
+    animation: pulse 1.2s ease-in-out infinite;
+}
+@keyframes pulse {
+    0%, 100% { opacity: 0.4; }
+    50% { opacity: 1; }
+}
+
+.node-card.disabled { cursor: default; }
+.node-card.disabled:hover { background-color: var(--color-background-soft); }
+
+.btn-row {
+    padding: 4px 10px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    border: 1px solid;
+    background-color: transparent;
+    transition: background-color 150ms;
+    white-space: nowrap;
+}
+.btn-row:disabled { opacity: 0.4; cursor: default; }
+
+.btn-reconnect {
+    color: #94C5CC;
+    border-color: #94C5CC;
+}
+.btn-reconnect:hover:not(:disabled) { background-color: rgba(148, 197, 204, 0.1); }
+
+.btn-disconnect {
+    color: #e06c75;
+    border-color: #e06c75;
+}
+.btn-disconnect:hover:not(:disabled) { background-color: rgba(224, 108, 117, 0.1); }
 
 .empty {
     font-size: 14px;

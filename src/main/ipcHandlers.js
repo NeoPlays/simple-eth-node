@@ -1,4 +1,4 @@
-import { ipcMain } from "electron";
+import { ipcMain, BrowserWindow } from "electron";
 import storage from "@main/store/StoreService"
 import nodeManager from "@main/nodes/NodeManager"
 import { Node } from "@main/nodes/Node";
@@ -17,6 +17,11 @@ export function initializeIpcHandlers() {
     // IPC NodeManager
     ipcMain.handle('ssh-login', (_, credentials) => {
         const node = new Node(credentials)
+        node.onStatusChange((status) => {
+            for (const w of BrowserWindow.getAllWindows()) {
+                w.webContents.send('node-status-changed', { id: node.id, status })
+            }
+        })
         return node.sshService.connect().then((data) => {
             nodeManager.addNode(node);
             return data;
@@ -36,6 +41,17 @@ export function initializeIpcHandlers() {
         } catch (error) {
             log.error('get-node error:', error);
             throw error;
+        }
+    });
+
+    ipcMain.handle('reconnect-node', async (_, nodeId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.reconnect()
+        } catch (error) {
+            log.error('reconnect-node error:', error)
+            return false
         }
     });
 

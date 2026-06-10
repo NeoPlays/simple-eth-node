@@ -1,6 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import log from 'electron-log'
-import { allowedChannels } from './ipcChannelWhitelist'
+import { allowedChannels, allowedEvents } from './ipcChannelWhitelist'
 
 const CHANNEL_WIDTH = 30;
 
@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld(
                 });
                 return promise;
             }
+        },
+        on: (channel, listener) => {
+            if (!allowedEvents.includes(channel)) return () => {}
+            const wrapped = (_event, ...args) => listener(...args)
+            ipcRenderer.on(channel, wrapped)
+            return () => ipcRenderer.removeListener(channel, wrapped)
         },
     }
 );

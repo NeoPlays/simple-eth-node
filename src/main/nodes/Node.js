@@ -11,9 +11,27 @@ export class Node {
 
     constructor(sshCredentials) {
         this.id = randomUUID();
-        this.sshService = new SSHService(new SSHParams(sshCredentials.host, sshCredentials.port, sshCredentials.username, sshCredentials.password, sshCredentials.privateKey, sshCredentials.passphrase));;
+        this.status = 'disconnected';
+        this._statusListeners = new Set();
+        this.sshService = new SSHService(
+            new SSHParams(sshCredentials.host, sshCredentials.port, sshCredentials.username, sshCredentials.password, sshCredentials.privateKey, sshCredentials.passphrase),
+            (state) => this._setStatus(state)
+        );
         this.settings = null;
         this.services = [];
+    }
+
+    _setStatus(status) {
+        if (this.status === status) return;
+        this.status = status;
+        for (const cb of this._statusListeners) {
+            try { cb(status) } catch (e) { log.error('status listener error:', e) }
+        }
+    }
+
+    onStatusChange(cb) {
+        this._statusListeners.add(cb);
+        return () => this._statusListeners.delete(cb);
     }
 
     /**
@@ -26,6 +44,7 @@ export class Node {
             name: this.sshService.SSHParams.name,
             host: this.sshService.SSHParams.host,
             connected: this.sshService.connections.length > 0,
+            status: this.status,
         }
     }
 
@@ -40,6 +59,7 @@ export class Node {
             host: this.sshService.SSHParams.host,
             port: this.sshService.SSHParams.port,
             username: this.sshService.SSHParams.username,
+            status: this.status,
             settings: this.settings,
             services: this.services.map(s => ({
                 ...s,
@@ -138,6 +158,10 @@ export class Node {
 
     disconnect() {
         this.sshService.disconnect()
+    }
+
+    async reconnect() {
+        return this.sshService.reconnect()
     }
 
     async fetchServiceConfigs() {

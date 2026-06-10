@@ -13,7 +13,16 @@
             </div>
         </div>
 
-        <div v-if="error" class="state-message error">
+        <div v-if="reconnecting" class="state-message">
+            <span class="loading-spinner inline"></span>
+            Reconnecting to {{ nodeHost }}…
+        </div>
+
+        <div v-else-if="disconnected" class="state-message error">
+            Connection to this node was lost. Return to the node list to reconnect or remove it.
+        </div>
+
+        <div v-else-if="error" class="state-message error">
             Failed to load node. Check your SSH connection and try again.
         </div>
 
@@ -76,7 +85,7 @@
 
 <script setup>
 import { useRouter, useRoute } from 'vue-router'
-import { onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useNodesStore } from '@stores/useNodes'
 
 const router = useRouter()
@@ -88,12 +97,20 @@ const loading = ref(true)
 const error = ref(false)
 const pending = reactive(new Set())
 
+const nodeStatus = computed(() => {
+    const n = store.nodes.find(n => n.id === route.params.id)
+    return n?.status
+})
+const disconnected = computed(() => nodeStatus.value === 'disconnected')
+const reconnecting = computed(() => nodeStatus.value === 'reconnecting')
+const nodeHost = computed(() => store.nodes.find(n => n.id === route.params.id)?.host)
+
 async function load(force = false) {
     loading.value = true
     error.value = false
     const result = await (force ? store.refreshNode(route.params.id) : store.getNode(route.params.id))
     if (!result) {
-        error.value = true
+        error.value = !store.isDisconnected(route.params.id)
     } else {
         nodeData.value = result
     }
@@ -151,7 +168,9 @@ let statusInterval = null
 onMounted(async () => {
     await load()
     statusInterval = setInterval(async () => {
-        if (nodeData.value && !loading.value) await refreshContainerStatuses()
+        if (nodeData.value && !loading.value && !store.isDisconnected(route.params.id)) {
+            await refreshContainerStatuses()
+        }
     }, 10_000)
 })
 
@@ -188,6 +207,14 @@ onUnmounted(() => clearInterval(statusInterval))
     border-top-color: #94C5CC;
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
+}
+.loading-spinner.inline {
+    width: 14px;
+    height: 14px;
+    border-width: 2px;
+    display: inline-block;
+    vertical-align: middle;
+    margin-right: 8px;
 }
 
 @keyframes spin {
