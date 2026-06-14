@@ -23,6 +23,7 @@ export class Node {
 
     _setStatus(status) {
         if (this.status === status) return;
+        log.info(`Node :: ${this.sshService.SSHParams.host} :: ${this.status} → ${status}`);
         this.status = status;
         for (const cb of this._statusListeners) {
             try { cb(status) } catch (e) { log.error('status listener error:', e) }

@@ -69,6 +69,10 @@ async function login() {
     loginError.value = ''
     try {
         const result = await window.api.invoke('ssh-login', _.cloneDeep(credentials.value))
+        if (result.code === 2 && result.nodeId) {
+            router.push(`/node/${result.nodeId}`)
+            return
+        }
         if (result.code !== 0) {
             loginError.value = result.message || 'Connection failed'
             return
