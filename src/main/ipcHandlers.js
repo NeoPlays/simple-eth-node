@@ -1,9 +1,42 @@
-import { ipcMain, BrowserWindow } from "electron";
+import { ipcMain, BrowserWindow, net } from "electron";
 import storage from "@main/store/StoreService"
 import nodeManager from "@main/nodes/NodeManager"
 import { Node } from "@main/nodes/Node";
 import log from 'electron-log'
 import _ from 'lodash'
+
+const UPDATES_MANIFEST_URL = 'https://stereum.com/downloads/updates.json'
+const UPDATES_MANIFEST_TTL_MS = 5 * 60 * 1000
+let _manifestCache = null
+
+function fetchUpdatesManifest() {
+    if (_manifestCache && Date.now() - _manifestCache.fetchedAt < UPDATES_MANIFEST_TTL_MS) {
+        return Promise.resolve(_manifestCache.data)
+    }
+    return new Promise((resolve, reject) => {
+        const request = net.request(UPDATES_MANIFEST_URL)
+        let body = ''
+        request.on('response', (res) => {
+            if (res.statusCode < 200 || res.statusCode >= 300) {
+                reject(new Error(`updates.json HTTP ${res.statusCode}`))
+                return
+            }
+            res.on('data', (chunk) => { body += chunk.toString('utf8') })
+            res.on('end', () => {
+                try {
+                    const data = JSON.parse(body)
+                    _manifestCache = { data, fetchedAt: Date.now() }
+                    resolve(data)
+                } catch (e) {
+                    reject(new Error(`updates.json parse failed: ${e.message}`))
+                }
+            })
+            res.on('error', reject)
+        })
+        request.on('error', reject)
+        request.end()
+    })
+}
 
 export function initializeIpcHandlers() {
     // IPC test
@@ -100,6 +133,81 @@ export function initializeIpcHandlers() {
             return await node.restartService(serviceId)
         } catch (error) {
             log.error('restart-service error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('fetch-updates-manifest', async () => {
+        try {
+            return await fetchUpdatesManifest()
+        } catch (error) {
+            log.error('fetch-updates-manifest error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('get-controls-commit', async (_, nodeId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.fetchControlsCommit()
+        } catch (error) {
+            log.error('get-controls-commit error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('get-upgradable-packages', async (_, nodeId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.fetchUpgradablePackages()
+        } catch (error) {
+            log.error('get-upgradable-packages error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('update-os', async (_, nodeId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.updateOS()
+        } catch (error) {
+            log.error('update-os error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('update-package', async (_, nodeId, name) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.updatePackage(name)
+        } catch (error) {
+            log.error('update-package error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('update-services', async (_, nodeId, serviceIds = null) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.updateServices(serviceIds)
+        } catch (error) {
+            log.error('update-services error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('update-stereum', async (_, nodeId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.updateStereum()
+        } catch (error) {
+            log.error('update-stereum error:', error)
             throw error
         }
     });

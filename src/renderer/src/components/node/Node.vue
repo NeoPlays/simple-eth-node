@@ -36,6 +36,64 @@
             </div>
 
             <section class="section">
+                <h2 class="section-title">Host</h2>
+                <div class="host-row">
+                    <div class="host-info">
+                        <span class="host-label">Operating System</span>
+                        <span v-if="osPackages" class="muted">
+                            {{ osPackages.length ? `${osPackages.length} package${osPackages.length === 1 ? '' : 's'} upgradable` : 'up to date' }}
+                        </span>
+                        <span v-else-if="osPackagesError" class="muted error">{{ osPackagesError }}</span>
+                        <span v-else class="muted">checking…</span>
+                    </div>
+                    <div class="host-actions">
+                        <button v-if="osPackages?.length" class="btn-ghost small" @click="osExpanded = !osExpanded">
+                            {{ osExpanded ? 'Hide list' : 'Show list' }}
+                        </button>
+                        <button class="btn-edit" @click="runHostUpdate('os')" :disabled="hostBusy">
+                            {{ hostBusy === 'os' ? 'Updating…' : 'Update OS' }}
+                        </button>
+                    </div>
+                </div>
+                <div v-if="osExpanded && osPackages?.length" class="pkg-list">
+                    <div v-for="pkg in osPackages" :key="pkg.name" class="pkg-row">
+                        <span class="pkg-name">{{ pkg.name }}</span>
+                        <span class="pkg-versions">
+                            <span>{{ pkg.currentVersion }}</span>
+                            <span class="arrow">→</span>
+                            <span class="latest">{{ pkg.newVersion }}</span>
+                        </span>
+                        <button class="btn-edit" @click="updatePackage(pkg.name)" :disabled="pkgBusy.has(pkg.name) || hostBusy === 'os'">
+                            {{ pkgBusy.has(pkg.name) ? '…' : 'Update' }}
+                        </button>
+                    </div>
+                </div>
+
+                <div class="host-row">
+                    <div class="host-info">
+                        <span class="host-label">Node Controls</span>
+                        <span v-if="controlsInfo" class="muted">
+                            <span v-if="controlsInfo.version">{{ controlsInfo.version }} ({{ controlsInfo.commit }})</span>
+                            <span v-else>{{ controlsInfo.commit }} — not in manifest</span>
+                            <span v-if="controlsInfo.upgradable" class="version-diff inline">
+                                <span class="arrow">→</span> <span class="latest">{{ controlsInfo.latestVersion }}</span>
+                            </span>
+                            <span v-else-if="controlsInfo.version" class="muted"> · up to date</span>
+                        </span>
+                        <span v-else-if="controlsError" class="muted error">{{ controlsError }}</span>
+                        <span v-else class="muted">checking…</span>
+                    </div>
+                    <div class="host-actions">
+                        <button class="btn-edit" @click="runHostUpdate('stereum')" :disabled="hostBusy">
+                            {{ hostBusy === 'stereum' ? 'Updating…' : 'Update Node Controls' }}
+                        </button>
+                    </div>
+                </div>
+
+                <div v-if="hostMessage" class="msg" :class="hostMessage.kind">{{ hostMessage.text }}</div>
+            </section>
+
+            <section class="section">
                 <h2 class="section-title">Services</h2>
                 <div v-if="nodeData.services?.length === 0" class="state-message">No services found.</div>
                 <div class="service-list">
@@ -49,8 +107,20 @@
                             <span v-else class="container-status unknown">
                                 <span class="status-dot"></span>unknown
                             </span>
+                            <span v-if="serviceUpdate(service).upgradable" class="version-diff">
+                                {{ serviceUpdate(service).current }} <span class="arrow">→</span>
+                                <span class="latest">{{ serviceUpdate(service).latest }}</span>
+                            </span>
                         </div>
                         <div class="service-actions">
+                            <button
+                                v-if="serviceUpdate(service).upgradable"
+                                class="btn-service-action btn-update"
+                                @click="updateService(service.id)"
+                                :disabled="pending.has(service.id)"
+                            >
+                                {{ pending.has(service.id) ? '…' : 'Update' }}
+                            </button>
                             <button
                                 class="btn-service-action"
                                 :class="isRunning(service) ? 'btn-stop' : 'btn-start'"
@@ -87,7 +157,6 @@
 import { useRouter, useRoute } from 'vue-router'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useNodesStore } from '@stores/useNodes'
-
 const router = useRouter()
 const route = useRoute()
 const store = useNodesStore()
@@ -96,6 +165,31 @@ const nodeData = ref(null)
 const loading = ref(true)
 const error = ref(false)
 const pending = reactive(new Set())
+
+const manifest = ref(null)
+const osPackages = ref(null)
+const osPackagesError = ref(null)
+const osExpanded = ref(false)
+const pkgBusy = reactive(new Set())
+const hostBusy = ref(null)
+const hostMessage = ref(null)
+const controlsCommit = ref(null)
+const controlsError = ref(null)
+
+const controlsInfo = computed(() => {
+    if (!controlsCommit.value) return null
+    const info = { commit: controlsCommit.value, version: null, latestVersion: null, upgradable: false }
+    const entries = manifest.value?.stereum
+    if (!Array.isArray(entries) || !entries.length) return info
+    const current = entries.find(e => e?.commit === controlsCommit.value)
+    if (current) info.version = current.name
+    const latest = entries[entries.length - 1]
+    if (info.version && latest?.name && latest.name !== info.version) {
+        info.latestVersion = latest.name
+        info.upgradable = true
+    }
+    return info
+})
 
 const nodeStatus = computed(() => {
     const n = store.nodes.find(n => n.id === route.params.id)
@@ -158,6 +252,103 @@ async function restartService(service) {
     }
 }
 
+function parseImageTag(image) {
+    if (!image) return null
+    const idx = image.lastIndexOf(':')
+    return idx < 0 ? null : image.slice(idx + 1)
+}
+
+function serviceUpdate(service) {
+    const serviceType = service.config?.service
+    const network = service.config?.network
+    const current = parseImageTag(service.config?.image)
+    const versions = manifest.value?.[network]?.[serviceType] ?? null
+    const latest = versions?.length ? versions[versions.length - 1] : null
+    return { current, latest, upgradable: !!(latest && current && latest !== current) }
+}
+
+async function loadManifest() {
+    try {
+        manifest.value = await window.api.invoke('fetch-updates-manifest')
+    } catch (e) {
+        console.error('fetch-updates-manifest failed:', e)
+    }
+}
+
+async function loadControlsCommit() {
+    controlsError.value = null
+    try {
+        controlsCommit.value = await window.api.invoke('get-controls-commit', route.params.id)
+    } catch (e) {
+        controlsError.value = e.message || String(e)
+    }
+}
+
+async function loadOsPackages() {
+    osPackagesError.value = null
+    try {
+        osPackages.value = await window.api.invoke('get-upgradable-packages', route.params.id)
+    } catch (e) {
+        osPackagesError.value = e.message || String(e)
+    }
+}
+
+function flashHost(kind, text) {
+    hostMessage.value = { kind, text }
+    setTimeout(() => { if (hostMessage.value?.text === text) hostMessage.value = null }, 5000)
+}
+
+async function refreshAfterUpdate() {
+    await load(true)
+    await Promise.all([loadOsPackages(), loadControlsCommit()])
+}
+
+async function updateService(serviceId) {
+    pending.add(serviceId)
+    try {
+        await window.api.invoke('update-services', route.params.id, [serviceId])
+        await refreshAfterUpdate()
+    } catch (e) {
+        console.error('update-services failed:', e)
+        alert(`Service update failed: ${e.message || e}`)
+    } finally {
+        pending.delete(serviceId)
+    }
+}
+
+async function updatePackage(name) {
+    pkgBusy.add(name)
+    try {
+        await window.api.invoke('update-package', route.params.id, name)
+        flashHost('success', `Updated ${name}`)
+        await refreshAfterUpdate()
+    } catch (e) {
+        flashHost('error', `Package update failed: ${e.message || e}`)
+    } finally {
+        pkgBusy.delete(name)
+    }
+}
+
+async function runHostUpdate(kind) {
+    const prompts = {
+        os: osPackages.value?.length
+            ? `Update all ${osPackages.value.length} packages? May reboot the host and drop SSH — it will auto-reconnect.`
+            : 'Run apt upgrade on this host? May reboot and drop SSH — it will auto-reconnect.',
+        stereum: 'Update stereum controls on this host?',
+    }
+    if (!confirm(prompts[kind])) return
+    hostBusy.value = kind
+    try {
+        await window.api.invoke(kind === 'os' ? 'update-os' : 'update-stereum', route.params.id)
+        flashHost('success', `${kind === 'os' ? 'OS' : 'Node controls'} update completed.`)
+        await refreshAfterUpdate()
+    } catch (e) {
+        flashHost('error', `${kind} update failed: ${e.message || e}`)
+    } finally {
+        hostBusy.value = null
+    }
+}
+
 async function disconnect() {
     await store.disconnectNode(route.params.id)
     router.push('/')
@@ -167,6 +358,11 @@ let statusInterval = null
 
 onMounted(async () => {
     await load()
+    if (nodeData.value) {
+        loadManifest()
+        loadOsPackages()
+        loadControlsCommit()
+    }
     statusInterval = setInterval(async () => {
         if (nodeData.value && !loading.value && !store.isDisconnected(route.params.id)) {
             await refreshContainerStatuses()
@@ -410,8 +606,8 @@ onUnmounted(() => clearInterval(statusInterval))
     display: flex;
     align-items: center;
     gap: 5px;
-    font-size: 11px;
-    color: var(--ev-c-text-3);
+    font-size: 12px;
+    color: var(--ev-c-text-2);
 }
 .status-dot {
     width: 7px;
@@ -464,4 +660,110 @@ onUnmounted(() => clearInterval(statusInterval))
     padding: 40px;
 }
 .state-message.error { color: #e06c75; }
+
+.host-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 18px;
+    background-color: var(--color-background-soft);
+    border-radius: 10px;
+    margin-bottom: 8px;
+}
+.host-info {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.host-label {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--ev-c-text-1);
+}
+.host-actions {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+}
+.muted {
+    font-size: 12px;
+    color: var(--ev-c-text-2);
+}
+.muted.error {
+    color: #e06c75;
+}
+.btn-ghost.small {
+    padding: 2px 8px;
+    font-size: 11px;
+    background-color: transparent;
+    color: var(--ev-c-text-2);
+    border: 1px solid var(--ev-c-gray-2);
+    border-radius: 6px;
+    cursor: pointer;
+}
+.btn-ghost.small:hover:not(:disabled) { background-color: var(--ev-c-gray-3); }
+
+.pkg-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 0 0 6px 16px;
+    padding: 8px 12px;
+    background-color: var(--color-background-mute);
+    border-radius: 6px;
+}
+.pkg-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: center;
+    gap: 12px;
+    font-size: 12px;
+}
+.pkg-name {
+    font-family: ui-monospace, monospace;
+    color: var(--ev-c-text-1);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.pkg-versions {
+    font-family: ui-monospace, monospace;
+    color: var(--ev-c-text-2);
+    font-size: 11px;
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+.pkg-versions .arrow, .version-diff .arrow { color: var(--ev-c-text-3); }
+.pkg-versions .latest, .version-diff .latest { color: #98c379; }
+
+.msg {
+    font-size: 12px;
+    padding: 6px 10px;
+    border-radius: 6px;
+    margin-top: 6px;
+}
+.msg.success { color: #98c379; background-color: rgba(152, 195, 121, 0.08); }
+.msg.error { color: #e06c75; background-color: rgba(224, 108, 117, 0.08); }
+
+.version-diff {
+    font-family: ui-monospace, monospace;
+    font-size: 11px;
+    color: var(--ev-c-text-2);
+    padding: 2px 7px;
+    border-radius: 4px;
+    background-color: rgba(152, 195, 121, 0.1);
+}
+.version-diff.inline {
+    background-color: transparent;
+    padding: 0;
+    margin-left: 4px;
+}
+
+.btn-update {
+    background-color: transparent;
+    color: #98c379;
+    border-color: #98c379;
+}
+.btn-update:hover:not(:disabled) { background-color: rgba(152, 195, 121, 0.1); }
 </style>

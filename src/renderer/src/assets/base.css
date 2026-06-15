@@ -29,6 +29,60 @@
     --color-background-mute: var(--ev-c-black-mute);
 
     --color-text: var(--ev-c-text-1);
+
+    /* --- Design tokens ---
+       See CLAUDE.md → "Design system" for usage rules.
+       Numeric scale is intentionally small: pick the closest, don't invent new sizes. */
+
+    /* Brand + semantic colors */
+    --color-accent: #94C5CC;
+    --color-accent-hover: #7AAEB5;
+    --color-success: #98c379;
+    --color-danger:  #e06c75;
+    --color-warning: #e5c07b;
+
+    /* Type scale */
+    --font-size-page-title: 22px;   /* h1 on a view (e.g. node name) */
+    --font-size-title:      15px;   /* card titles (service-name, host-label) */
+    --font-size-body:       14px;   /* body text, empty-state messages */
+    --font-size-button:     13px;   /* default button label */
+    --font-size-secondary:  12px;   /* secondary info (uptime, version, host meta) */
+    --font-size-meta:       11px;   /* chips, IDs, small inline labels */
+    --font-size-micro:      10px;   /* tiny pill labels (e.g. "config" / "running") */
+
+    /* Weights */
+    --font-weight-medium:   500;    /* button labels */
+    --font-weight-semibold: 600;    /* card titles */
+    --font-weight-bold:     700;    /* page titles */
+
+    /* Radii */
+    --radius-sm:  4px;              /* chips */
+    --radius-md:  6px;              /* small/secondary buttons, inline rows */
+    --radius-lg:  8px;              /* default buttons */
+    --radius-xl:  10px;             /* cards */
+    --radius-2xl: 12px;             /* large header cards */
+
+    /* Spacing — pick the closest, don't add new sizes */
+    --space-1: 4px;
+    --space-2: 6px;
+    --space-3: 8px;
+    --space-4: 12px;
+    --space-5: 16px;
+    --space-6: 20px;
+    --space-7: 24px;
+    --space-8: 32px;
+    --space-9: 40px;
+
+    /* Common component dimensions */
+    --view-padding:        32px 40px;   /* top-level view padding */
+    --card-padding:        14px 18px;   /* service/host card padding */
+    --header-card-padding: 20px 24px;   /* node header card */
+    --button-padding:       7px 14px;                  /* default button */
+    --button-padding-small: 4px 10px;                  /* small button */
+    --chip-padding:         2px 7px;                   /* inline chip */
+
+    /* Motion */
+    --transition-fast: 150ms;
 }
 
 *,

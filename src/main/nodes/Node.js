@@ -142,6 +142,51 @@ export class Node {
         })
     }
 
+    async fetchControlsCommit() {
+        if (!this.settings) await this.fetchSettings()
+        const controlsPath = this.settings?.stereum_settings?.settings?.controls_install_path
+        if (!controlsPath) throw new Error('controls_install_path not found in stereum settings')
+        const response = await this.sshService.exec(
+            `git -C ${controlsPath}/ansible rev-parse HEAD 2>/dev/null || git -C ${controlsPath} rev-parse HEAD 2>/dev/null`
+        )
+        if (response.rc !== 0 && response.rc !== null) throw new Error(response.stderr || 'fetchControlsCommit failed')
+        const commit = response.stdout.trim()
+        if (!commit) throw new Error('controls commit not found (not a git checkout?)')
+        return commit
+    }
+
+    async fetchUpgradablePackages() {
+        const response = await this.sshService.exec("apt list --upgradable 2>/dev/null | tail -n +2")
+        if (response.rc !== 0 && response.rc !== null) {
+            throw new Error(response.stderr || 'fetchUpgradablePackages failed')
+        }
+        const pkgs = []
+        for (const line of response.stdout.split('\n')) {
+            const m = line.match(/^([^/\s]+)\/\S+\s+(\S+)\s+\S+\s+\[upgradable from:\s*([^\]]+)\]/)
+            if (m) pkgs.push({ name: m[1], newVersion: m[2], currentVersion: m[3].trim() })
+        }
+        return pkgs
+    }
+
+    async updateOS() {
+        return this.runPlaybook('update-os')
+    }
+
+    async updatePackage(name) {
+        return this.runPlaybook('update-package', { stereum: { update_package: { name } } })
+    }
+
+    async updateServices(serviceIds = null) {
+        const extra = serviceIds?.length
+            ? { stereum: { update_services: { services_to_update: serviceIds } } }
+            : {}
+        return this.runPlaybook('update-services', extra)
+    }
+
+    async updateStereum() {
+        return this.runPlaybook('update-stereum')
+    }
+
     async runPlaybook(role, extraVars = {}) {
         if (!this.settings) await this.fetchSettings()
 

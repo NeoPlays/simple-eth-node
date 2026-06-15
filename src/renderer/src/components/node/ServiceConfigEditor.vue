@@ -32,9 +32,11 @@
 <script setup>
 import { useRouter, useRoute } from 'vue-router'
 import { onMounted, ref } from 'vue'
+import { useNodesStore } from '@stores/useNodes'
 
 const router = useRouter()
 const route = useRoute()
+const store = useNodesStore()
 
 const content = ref('')
 const loading = ref(true)
@@ -60,6 +62,7 @@ async function save() {
     saveError.value = ''
     try {
         await window.api.invoke('write-service-config', route.params.id, route.params.serviceId, content.value)
+        delete store.nodeCache[route.params.id]
         router.back()
     } catch (err) {
         saveError.value = err?.message || 'Failed to write config'
