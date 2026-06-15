@@ -21,3 +21,45 @@ code {
     border-radius: var(--radius-sm);
     background-color: var(--color-background-mute);
 }
+
+/* ANSI SGR colour palette for terminal-style log output.
+   Picked from a One Dark-ish palette for the dark theme; overridden for the light theme
+   so the colours stay readable on a white background. */
+.ansi-bold      { font-weight: 700; }
+.ansi-dim       { opacity: 0.65; }
+.ansi-italic    { font-style: italic; }
+.ansi-underline { text-decoration: underline; }
+
+.ansi-black      { color: #5c6370; }
+.ansi-red        { color: #e06c75; }
+.ansi-green      { color: #98c379; }
+.ansi-yellow     { color: #e5c07b; }
+.ansi-blue       { color: #61afef; }
+.ansi-magenta    { color: #c678dd; }
+.ansi-cyan       { color: #56b6c2; }
+.ansi-white      { color: #abb2bf; }
+.ansi-br-black   { color: #7f848e; }
+.ansi-br-red     { color: #ff7b85; }
+.ansi-br-green   { color: #a8d885; }
+.ansi-br-yellow  { color: #f0cf86; }
+.ansi-br-blue    { color: #74c0ff; }
+.ansi-br-magenta { color: #d68aff; }
+.ansi-br-cyan    { color: #5fd0d6; }
+.ansi-br-white   { color: #383a42; }
+
+:root[data-theme="light"] .ansi-black      { color: #2a2c33; }
+:root[data-theme="light"] .ansi-red        { color: #c91b00; }
+:root[data-theme="light"] .ansi-green      { color: #2d8a00; }
+:root[data-theme="light"] .ansi-yellow     { color: #a37800; }
+:root[data-theme="light"] .ansi-blue       { color: #2078cb; }
+:root[data-theme="light"] .ansi-magenta    { color: #a626a4; }
+:root[data-theme="light"] .ansi-cyan       { color: #0184bb; }
+:root[data-theme="light"] .ansi-white      { color: #5a5e66; }
+:root[data-theme="light"] .ansi-br-black   { color: #181a1f; }
+:root[data-theme="light"] .ansi-br-red     { color: #e63a2a; }
+:root[data-theme="light"] .ansi-br-green   { color: #3aa300; }
+:root[data-theme="light"] .ansi-br-yellow  { color: #b88800; }
+:root[data-theme="light"] .ansi-br-blue    { color: #1d6fc4; }
+:root[data-theme="light"] .ansi-br-magenta { color: #c43dc1; }
+:root[data-theme="light"] .ansi-br-cyan    { color: #009ed6; }
+:root[data-theme="light"] .ansi-br-white   { color: #383a42; }

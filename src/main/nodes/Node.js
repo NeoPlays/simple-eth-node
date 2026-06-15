@@ -142,6 +142,17 @@ export class Node {
         })
     }
 
+    /**
+     * Stream `docker logs -f` for a service. Returns a handle with .abort().
+     * @param {string} serviceId
+     * @param {{ tail?: number, onLine: (line: string) => void, onClose?: (info: { rc?: number, error?: Error }) => void }} opts
+     */
+    async streamServiceLogs(serviceId, { tail = 200, onLine, onClose, onError } = {}) {
+        const safeTail = Number.isFinite(tail) && tail > 0 ? Math.floor(tail) : 200
+        const cmd = `docker logs -f --tail ${safeTail} stereum-${serviceId}`
+        return this.sshService.execStream(cmd, { onLine, onClose, onError })
+    }
+
     async fetchControlsCommit() {
         if (!this.settings) await this.fetchSettings()
         const controlsPath = this.settings?.stereum_settings?.settings?.controls_install_path

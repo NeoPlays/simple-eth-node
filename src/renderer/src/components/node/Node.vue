@@ -144,6 +144,7 @@
                             >
                                 {{ pending.has(service.id) ? '…' : 'Restart' }}
                             </button>
+                            <button class="btn-edit" @click="viewLogs(service.id)" :disabled="pending.has(service.id)">Logs</button>
                             <button class="btn-edit" @click="editService(service.id)" :disabled="pending.has(service.id)">Edit</button>
                         </div>
                         <span class="service-image">
@@ -224,6 +225,10 @@ function refresh() {
 
 function editService(serviceId) {
     router.push({ name: 'ServiceConfig', params: { id: route.params.id, serviceId } })
+}
+
+function viewLogs(serviceId) {
+    router.push({ name: 'ServiceLogs', params: { id: route.params.id, serviceId } })
 }
 
 function isRunning(service) {

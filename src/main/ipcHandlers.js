@@ -4,6 +4,13 @@ import nodeManager from "@main/nodes/NodeManager"
 import { Node } from "@main/nodes/Node";
 import log from 'electron-log'
 import _ from 'lodash'
+import { randomUUID } from 'crypto'
+
+const logSessions = new Map() // sessionId -> { handle, nodeId }
+
+function broadcast(channel, payload) {
+    for (const w of BrowserWindow.getAllWindows()) w.webContents.send(channel, payload)
+}
 
 const UPDATES_MANIFEST_URL = 'https://stereum.com/downloads/updates.json'
 const UPDATES_MANIFEST_TTL_MS = 5 * 60 * 1000
@@ -98,6 +105,11 @@ export function initializeIpcHandlers() {
 
     ipcMain.handle('disconnect-node', async (_, nodeId) => {
         try {
+            for (const [sessionId, session] of logSessions) {
+                if (session.nodeId !== nodeId) continue
+                try { session.handle.abort() } catch { /* ignore */ }
+                logSessions.delete(sessionId)
+            }
             nodeManager.disconnectNode(nodeId)
         } catch (error) {
             log.error('disconnect-node error:', error);
@@ -144,6 +156,30 @@ export function initializeIpcHandlers() {
             log.error('fetch-updates-manifest error:', error)
             throw error
         }
+    });
+
+    ipcMain.handle('service-logs-start', async (_, nodeId, serviceId, tail) => {
+        const node = nodeManager.findNode(nodeId)
+        if (!node) throw new Error('Node not found')
+        const sessionId = randomUUID()
+        const handle = await node.streamServiceLogs(serviceId, {
+            tail,
+            onLine: (line) => broadcast('service-log-data', { sessionId, line }),
+            onClose: ({ rc, error }) => {
+                logSessions.delete(sessionId)
+                broadcast('service-log-closed', { sessionId, rc, error: error?.message })
+            },
+        })
+        logSessions.set(sessionId, { handle, nodeId })
+        return sessionId
+    });
+
+    ipcMain.handle('service-logs-stop', (_, sessionId) => {
+        const session = logSessions.get(sessionId)
+        if (!session) return
+        try { session.handle.abort() } catch (e) { log.warn('service-logs-stop abort threw:', e?.message || e) }
+        // onClose will delete the entry; ensure cleanup even if no close event fires
+        logSessions.delete(sessionId)
     });
 
     ipcMain.handle('get-controls-commit', async (_, nodeId) => {

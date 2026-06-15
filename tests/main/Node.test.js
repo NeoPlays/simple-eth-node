@@ -22,6 +22,7 @@ vi.mock('@main/ssh/SSHService', () => {
             this.connections = []
             this.onStateChange = onStateChange // expose for test inspection
             this.exec = vi.fn()
+            this.execStream = vi.fn(async () => ({ abort: vi.fn() }))
             this.disconnect = vi.fn(() => { this.connections = [] })
             this.connect = vi.fn()
             this.reconnect = vi.fn(async () => true)
@@ -453,6 +454,36 @@ describe('Node', () => {
         it('throws on non-zero rc with stderr', async () => {
             node.sshService.exec.mockResolvedValueOnce(fail('apt locked'))
             await expect(node.fetchUpgradablePackages()).rejects.toThrow('apt locked')
+        })
+    })
+
+    describe('streamServiceLogs', () => {
+        it('runs docker logs -f against the stereum-<uuid> container and forwards callbacks', async () => {
+            const onLine = vi.fn(), onClose = vi.fn()
+            const handle = { abort: vi.fn() }
+            node.sshService.execStream.mockResolvedValueOnce(handle)
+            const r = await node.streamServiceLogs('svc-1', { tail: 50, onLine, onClose })
+            expect(r).toBe(handle)
+            const [cmd, opts] = node.sshService.execStream.mock.calls[0]
+            expect(cmd).toBe('docker logs -f --tail 50 stereum-svc-1')
+            expect(opts.onLine).toBe(onLine)
+            expect(opts.onClose).toBe(onClose)
+        })
+
+        it('defaults tail to 200', async () => {
+            await node.streamServiceLogs('svc-1', { onLine: () => {} })
+            expect(node.sshService.execStream.mock.calls[0][0]).toContain('--tail 200')
+        })
+
+        it('coerces invalid tail values to the default', async () => {
+            await node.streamServiceLogs('svc-1', { tail: -5, onLine: () => {} })
+            expect(node.sshService.execStream.mock.calls[0][0]).toContain('--tail 200')
+
+            await node.streamServiceLogs('svc-1', { tail: 'lots', onLine: () => {} })
+            expect(node.sshService.execStream.mock.calls[1][0]).toContain('--tail 200')
+
+            await node.streamServiceLogs('svc-1', { tail: 1.7, onLine: () => {} })
+            expect(node.sshService.execStream.mock.calls[2][0]).toContain('--tail 1 ')
         })
     })
 

@@ -204,6 +204,68 @@ export class SSHService {
         })
     }
 
+    /**
+     * Stream a long-running command. Buffers stdout into newline-delimited lines and
+     * invokes onLine for each one. Returns a handle with abort() that closes the channel.
+     */
+    async execStream(command, { onLine, onClose, onError, useSudo = true } = {}) {
+        if (useSudo) command = "sudo " + command
+        log.debug('SSH :: STREAM :: %s', command)
+        let sshConn
+        try {
+            sshConn = await this._getConnection()
+        } catch (err) {
+            onError?.(err)
+            onClose?.({ rc: -1, error: err })
+            return { abort() {} }
+        }
+        const conn = sshConn.conn
+        let stream = null
+        let closed = false
+        let buffer = ''
+
+        const emitLines = (chunk) => {
+            buffer += chunk.toString('utf8')
+            let idx
+            while ((idx = buffer.indexOf('\n')) >= 0) {
+                const line = buffer.slice(0, idx).replace(/\r$/, '')
+                buffer = buffer.slice(idx + 1)
+                try { onLine?.(line) } catch (e) { log.warn('execStream onLine threw:', e?.message || e) }
+            }
+        }
+
+        const handle = {
+            abort() {
+                if (closed) return
+                try { stream?.close() } catch { /* ignore */ }
+            },
+        }
+
+        conn.exec(command, (err, s) => {
+            if (err) {
+                if (closed) return
+                closed = true
+                onError?.(err)
+                onClose?.({ rc: -1, error: err })
+                return
+            }
+            stream = s
+            s.on('close', (code) => {
+                if (closed) return
+                closed = true
+                if (buffer.length) {
+                    try { onLine?.(buffer.replace(/\r$/, '')) } catch { /* ignore */ }
+                    buffer = ''
+                }
+                onClose?.({ rc: code })
+            })
+            s.on('data', emitLines)
+            s.stderr.on('data', emitLines)
+        })
+
+        return handle
+    }
+
     disconnect() {
         this._reachable = false
         this._reconnectAbort?.abort()

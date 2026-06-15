@@ -11,6 +11,7 @@ export default defineConfig({
             '@stores': resolve('src/renderer/src/stores'),
             '@components': resolve('src/renderer/src/components'),
             '@views': resolve('src/renderer/src/views'),
+            '@utils': resolve('src/renderer/src/utils'),
         }
     },
     test: {
@@ -21,7 +22,7 @@ export default defineConfig({
             provider: 'v8',
             reporter: ['text', 'html', 'lcov', 'json-summary', 'json'],
             reportOnFailure: true,
-            include: ['src/main/**/*.js', 'src/renderer/src/stores/**/*.js'],
+            include: ['src/main/**/*.js', 'src/renderer/src/stores/**/*.js', 'src/renderer/src/utils/**/*.js'],
             exclude: ['src/main/index.js'],
         },
     }

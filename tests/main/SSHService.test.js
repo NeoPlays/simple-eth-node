@@ -207,6 +207,113 @@ describe('SSHService', () => {
         })
     })
 
+    describe('execStream', () => {
+        function streamingConn() {
+            let cbStream
+            const stream = new FakeStream()
+            stream.close = vi.fn(() => stream.emit('close', null))
+            const conn = {
+                conn: {
+                    exec: vi.fn((cmd, cb) => {
+                        cbStream = stream
+                        cb(null, stream)
+                    }),
+                },
+                sessionCount: 0,
+            }
+            return { conn, stream, capturedCmd: () => conn.conn.exec.mock.calls[0]?.[0] }
+        }
+
+        it('prefixes sudo by default and routes to conn.exec', async () => {
+            const svc = new SSHService(makeParams())
+            const { conn, capturedCmd } = streamingConn()
+            svc.connections = [conn]
+            await svc.execStream('docker logs -f stereum-x', { onLine: () => {}, onClose: () => {} })
+            expect(capturedCmd()).toBe('sudo docker logs -f stereum-x')
+        })
+
+        it('emits one onLine per newline (stdout + stderr both feed the line buffer)', async () => {
+            const svc = new SSHService(makeParams())
+            const { conn, stream } = streamingConn()
+            svc.connections = [conn]
+            const lines = []
+            await svc.execStream('cmd', { onLine: l => lines.push(l), onClose: () => {}, useSudo: false })
+            stream.emit('data', Buffer.from('line1\nlin'))
+            stream.emit('data', Buffer.from('e2\n'))
+            stream.stderr.emit('data', Buffer.from('err-line\n'))
+            expect(lines).toEqual(['line1', 'line2', 'err-line'])
+        })
+
+        it('strips a trailing \\r before the \\n (windows-style endings)', async () => {
+            const svc = new SSHService(makeParams())
+            const { conn, stream } = streamingConn()
+            svc.connections = [conn]
+            const lines = []
+            await svc.execStream('cmd', { onLine: l => lines.push(l), useSudo: false })
+            stream.emit('data', Buffer.from('hello\r\nworld\r\n'))
+            expect(lines).toEqual(['hello', 'world'])
+        })
+
+        it('flushes the trailing partial line on close', async () => {
+            const svc = new SSHService(makeParams())
+            const { conn, stream } = streamingConn()
+            svc.connections = [conn]
+            const lines = []
+            const closes = []
+            await svc.execStream('cmd', { onLine: l => lines.push(l), onClose: c => closes.push(c), useSudo: false })
+            stream.emit('data', Buffer.from('partial'))
+            stream.emit('close', 0)
+            expect(lines).toEqual(['partial'])
+            expect(closes).toEqual([{ rc: 0 }])
+        })
+
+        it('abort() closes the stream and the second abort is a no-op', async () => {
+            const svc = new SSHService(makeParams())
+            const { conn, stream } = streamingConn()
+            svc.connections = [conn]
+            const handle = await svc.execStream('cmd', { onLine: () => {}, onClose: () => {}, useSudo: false })
+            handle.abort()
+            expect(stream.close).toHaveBeenCalledTimes(1)
+            handle.abort()
+            expect(stream.close).toHaveBeenCalledTimes(1)
+        })
+
+        it('invokes onError + onClose when conn.exec yields an error', async () => {
+            const svc = new SSHService(makeParams())
+            const conn = {
+                conn: { exec: (cmd, cb) => cb(new Error('chan')) },
+                sessionCount: 0,
+            }
+            svc.connections = [conn]
+            const onError = vi.fn()
+            const onClose = vi.fn()
+            await svc.execStream('cmd', { onLine: () => {}, onError, onClose, useSudo: false })
+            expect(onError).toHaveBeenCalledTimes(1)
+            expect(onError.mock.calls[0][0].message).toBe('chan')
+            expect(onClose).toHaveBeenCalledWith({ rc: -1, error: expect.any(Error) })
+        })
+
+        it('reports connection-acquire failure via onClose with rc=-1 (no throw)', async () => {
+            const svc = new SSHService(makeParams())
+            svc._reachable = false   // forces _getConnection to throw fast
+            const onClose = vi.fn()
+            const handle = await svc.execStream('cmd', { onLine: () => {}, onClose, useSudo: false })
+            expect(handle).toBeDefined()
+            expect(onClose).toHaveBeenCalledTimes(1)
+            expect(onClose.mock.calls[0][0].rc).toBe(-1)
+        })
+
+        it('does not throw if onLine handler throws (logs & continues)', async () => {
+            const svc = new SSHService(makeParams())
+            const { conn, stream } = streamingConn()
+            svc.connections = [conn]
+            const onLine = vi.fn(() => { throw new Error('renderer dead') })
+            await svc.execStream('cmd', { onLine, useSudo: false })
+            expect(() => stream.emit('data', Buffer.from('x\n'))).not.toThrow()
+            expect(onLine).toHaveBeenCalledWith('x')
+        })
+    })
+
     describe('disconnect', () => {
         it('calls .end() on each conn and clears the pool', () => {
             const svc = new SSHService(makeParams())

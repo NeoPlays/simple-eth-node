@@ -57,6 +57,7 @@ const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeWindow, fakeBrowse
             updatePackage: vi.fn(),
             updateServices: vi.fn(),
             updateStereum: vi.fn(),
+            streamServiceLogs: vi.fn(),
         },
         fakeNodeManager: {
             addNode: vi.fn(),
@@ -111,6 +112,8 @@ describe('ipcHandlers', () => {
             'ping',
             'reconnect-node',
             'restart-service',
+            'service-logs-start',
+            'service-logs-stop',
             'ssh-login',
             'start-service',
             'stop-service',
@@ -333,6 +336,89 @@ describe('ipcHandlers', () => {
             fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
             fakeNode.fetchUpgradablePackages.mockRejectedValueOnce(new Error('dpkg lock'))
             await expect(handlers['get-upgradable-packages'](event, 'n')).rejects.toThrow('dpkg lock')
+        })
+    })
+
+    describe('service log streaming', () => {
+        it('service-logs-start returns a sessionId and broadcasts log data lines to all windows', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            // Capture the streamServiceLogs opts so we can synthesize log lines
+            let capturedOpts
+            const abort = vi.fn()
+            fakeNode.streamServiceLogs.mockImplementationOnce(async (serviceId, opts) => {
+                capturedOpts = opts
+                return { abort }
+            })
+
+            const sessionId = await handlers['service-logs-start'](event, 'node-id', 'svc-1', 100)
+            expect(typeof sessionId).toBe('string')
+            expect(fakeNode.streamServiceLogs).toHaveBeenCalledWith('svc-1', expect.objectContaining({ tail: 100 }))
+
+            // Emit a line — should broadcast to every BrowserWindow
+            capturedOpts.onLine('hello')
+            expect(fakeWindow.webContents.send).toHaveBeenCalledWith('service-log-data', { sessionId, line: 'hello' })
+        })
+
+        it('service-logs-start throws when the node is missing', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(null)
+            await expect(handlers['service-logs-start'](event, 'missing', 'svc', 50)).rejects.toThrow('Node not found')
+        })
+
+        it('service-logs-stop aborts the in-flight stream', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            const abort = vi.fn()
+            fakeNode.streamServiceLogs.mockResolvedValueOnce({ abort })
+            const sessionId = await handlers['service-logs-start'](event, 'node-id', 'svc', 50)
+            await handlers['service-logs-stop'](event, sessionId)
+            expect(abort).toHaveBeenCalledTimes(1)
+        })
+
+        it('service-logs-stop is a no-op for unknown sessions', () => {
+            expect(() => handlers['service-logs-stop'](event, 'no-such-session')).not.toThrow()
+        })
+
+        it('onClose broadcasts service-log-closed and removes the session (subsequent stop is a no-op)', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            let capturedOpts
+            const abort = vi.fn()
+            fakeNode.streamServiceLogs.mockImplementationOnce(async (_, opts) => { capturedOpts = opts; return { abort } })
+            const sessionId = await handlers['service-logs-start'](event, 'node-id', 'svc', 50)
+
+            capturedOpts.onClose({ rc: 0 })
+            expect(fakeWindow.webContents.send).toHaveBeenCalledWith('service-log-closed', { sessionId, rc: 0, error: undefined })
+
+            await handlers['service-logs-stop'](event, sessionId)
+            expect(abort).not.toHaveBeenCalled()
+        })
+
+        it('disconnecting a node aborts every active log session belonging to it', async () => {
+            fakeNodeManager.findNode.mockReturnValue(fakeNode)
+            const abortA = vi.fn(), abortB = vi.fn()
+            fakeNode.streamServiceLogs
+                .mockResolvedValueOnce({ abort: abortA })
+                .mockResolvedValueOnce({ abort: abortB })
+
+            await handlers['service-logs-start'](event, 'node-id', 'svc-a', 50)
+            await handlers['service-logs-start'](event, 'node-id', 'svc-b', 50)
+
+            await handlers['disconnect-node'](event, 'node-id')
+            expect(abortA).toHaveBeenCalledTimes(1)
+            expect(abortB).toHaveBeenCalledTimes(1)
+            expect(fakeNodeManager.disconnectNode).toHaveBeenCalledWith('node-id')
+        })
+
+        it('disconnecting one node leaves another node\'s sessions intact', async () => {
+            fakeNodeManager.findNode.mockReturnValue(fakeNode)
+            const abortKeep = vi.fn(), abortKill = vi.fn()
+            fakeNode.streamServiceLogs
+                .mockResolvedValueOnce({ abort: abortKeep })
+                .mockResolvedValueOnce({ abort: abortKill })
+            await handlers['service-logs-start'](event, 'keep-node', 'svc', 50)
+            await handlers['service-logs-start'](event, 'kill-node', 'svc', 50)
+
+            await handlers['disconnect-node'](event, 'kill-node')
+            expect(abortKill).toHaveBeenCalledTimes(1)
+            expect(abortKeep).not.toHaveBeenCalled()
         })
     })
 
