@@ -107,8 +107,8 @@ async function disconnect(node) {
 
 .btn-primary {
     padding: 8px 18px;
-    background-color: #94C5CC;
-    color: #000;
+    background-color: var(--color-accent);
+    color: var(--color-accent-text);
     border: none;
     border-radius: 8px;
     font-size: 13px;
@@ -116,7 +116,7 @@ async function disconnect(node) {
     cursor: pointer;
     transition: background-color 150ms;
 }
-.btn-primary:hover { background-color: #7AAEB5; }
+.btn-primary:hover { background-color: var(--color-accent-hover); }
 
 .node-list {
     display: flex;
@@ -151,19 +151,20 @@ async function disconnect(node) {
 .node-host {
     font-size: 12px;
     color: var(--ev-c-text-3);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
 }
 
 .connection-badge {
-    width: 8px;
-    height: 8px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
     flex-shrink: 0;
+    background-color: var(--ev-c-gray-1);
 }
-.connection-badge.connected { background-color: #4CAF50; }
-.connection-badge.disconnected { background-color: #e05252; }
+.connection-badge.connected { background-color: var(--color-success); }
+.connection-badge.disconnected { background-color: var(--color-danger); }
 .connection-badge.reconnecting {
-    background-color: #e5c07b;
+    background-color: var(--color-warning);
     animation: pulse 1.2s ease-in-out infinite;
 }
 @keyframes pulse {
@@ -188,16 +189,16 @@ async function disconnect(node) {
 .btn-row:disabled { opacity: 0.4; cursor: default; }
 
 .btn-reconnect {
-    color: #94C5CC;
-    border-color: #94C5CC;
+    color: var(--color-accent);
+    border-color: var(--color-accent);
 }
-.btn-reconnect:hover:not(:disabled) { background-color: rgba(148, 197, 204, 0.1); }
+.btn-reconnect:hover:not(:disabled) { background-color: var(--color-accent-soft); }
 
 .btn-disconnect {
-    color: #e06c75;
-    border-color: #e06c75;
+    color: var(--color-danger);
+    border-color: var(--color-danger);
 }
-.btn-disconnect:hover:not(:disabled) { background-color: rgba(224, 108, 117, 0.1); }
+.btn-disconnect:hover:not(:disabled) { background-color: var(--color-danger-soft); }
 
 .empty {
     font-size: 14px;

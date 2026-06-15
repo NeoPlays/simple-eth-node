@@ -72,13 +72,20 @@
                 <div class="host-row">
                     <div class="host-info">
                         <span class="host-label">Node Controls</span>
-                        <span v-if="controlsInfo" class="muted">
-                            <span v-if="controlsInfo.version">{{ controlsInfo.version }} ({{ controlsInfo.commit }})</span>
-                            <span v-else>{{ controlsInfo.commit }} — not in manifest</span>
+                        <span v-if="controlsInfo" class="muted controls-version">
+                            <template v-if="controlsInfo.version">
+                                <span class="mono">{{ controlsInfo.version }}</span>
+                                <span>(<span class="mono">{{ controlsInfo.commit }}</span>)</span>
+                            </template>
+                            <template v-else>
+                                <span class="mono">{{ controlsInfo.commit }}</span>
+                                <span>— not in manifest</span>
+                            </template>
                             <span v-if="controlsInfo.upgradable" class="version-diff inline">
-                                <span class="arrow">→</span> <span class="latest">{{ controlsInfo.latestVersion }}</span>
+                                <span class="arrow">→</span>
+                                <span class="latest">{{ controlsInfo.latestVersion }}</span>
                             </span>
-                            <span v-else-if="controlsInfo.version" class="muted"> · up to date</span>
+                            <span v-else-if="controlsInfo.version">· up to date</span>
                         </span>
                         <span v-else-if="controlsError" class="muted error">{{ controlsError }}</span>
                         <span v-else class="muted">checking…</span>
@@ -400,7 +407,7 @@ onUnmounted(() => clearInterval(statusInterval))
     width: 24px;
     height: 24px;
     border: 3px solid rgba(148, 197, 204, 0.3);
-    border-top-color: #94C5CC;
+    border-top-color: var(--color-accent);
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
 }
@@ -431,15 +438,15 @@ onUnmounted(() => clearInterval(statusInterval))
 .btn-danger {
     padding: 7px 14px;
     background-color: transparent;
-    color: #e06c75;
-    border: 1px solid #e06c75;
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger);
     border-radius: 8px;
     cursor: pointer;
     font-size: 13px;
     font-weight: 500;
     transition: background-color 150ms;
 }
-.btn-danger:hover:not(:disabled) { background-color: rgba(224, 108, 117, 0.1); }
+.btn-danger:hover:not(:disabled) { background-color: var(--color-danger-soft); }
 .btn-danger:disabled { opacity: 0.5; cursor: default; }
 
 .btn-ghost {
@@ -456,8 +463,8 @@ onUnmounted(() => clearInterval(statusInterval))
 
 .btn-accent {
     padding: 7px 14px;
-    background-color: #94C5CC;
-    color: #000;
+    background-color: var(--color-accent);
+    color: var(--color-accent-text);
     border: none;
     border-radius: 8px;
     cursor: pointer;
@@ -465,7 +472,7 @@ onUnmounted(() => clearInterval(statusInterval))
     font-weight: 500;
     transition: background-color 150ms, opacity 150ms;
 }
-.btn-accent:hover:not(:disabled) { background-color: #7AAEB5; }
+.btn-accent:hover:not(:disabled) { background-color: var(--color-accent-hover); }
 .btn-accent:disabled { opacity: 0.5; cursor: default; }
 
 .node-header {
@@ -494,7 +501,7 @@ onUnmounted(() => clearInterval(statusInterval))
     background-color: var(--ev-c-gray-3);
     padding: 3px 8px;
     border-radius: 4px;
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
 }
 
 .section-title {
@@ -541,8 +548,8 @@ onUnmounted(() => clearInterval(statusInterval))
     font-size: 11px;
     padding: 2px 7px;
     border-radius: 4px;
-    background-color: #94C5CC22;
-    color: #94C5CC;
+    background-color: var(--color-accent-soft);
+    color: var(--color-accent);
     font-weight: 500;
 }
 
@@ -569,24 +576,24 @@ onUnmounted(() => clearInterval(statusInterval))
 
 .btn-start {
     background-color: transparent;
-    color: #98c379;
-    border-color: #98c379;
+    color: var(--color-success);
+    border-color: var(--color-success);
 }
-.btn-start:hover:not(:disabled) { background-color: rgba(152, 195, 121, 0.1); }
+.btn-start:hover:not(:disabled) { background-color: var(--color-success-soft); }
 
 .btn-stop {
     background-color: transparent;
-    color: #e06c75;
-    border-color: #e06c75;
+    color: var(--color-danger);
+    border-color: var(--color-danger);
 }
-.btn-stop:hover:not(:disabled) { background-color: rgba(224, 108, 117, 0.1); }
+.btn-stop:hover:not(:disabled) { background-color: var(--color-danger-soft); }
 
 .btn-restart {
     background-color: transparent;
-    color: #e5c07b;
-    border-color: #e5c07b;
+    color: var(--color-warning);
+    border-color: var(--color-warning);
 }
-.btn-restart:hover:not(:disabled) { background-color: rgba(229, 192, 123, 0.1); }
+.btn-restart:hover:not(:disabled) { background-color: var(--color-warning-soft); }
 
 .btn-edit {
     padding: 4px 10px;
@@ -616,11 +623,11 @@ onUnmounted(() => clearInterval(statusInterval))
     flex-shrink: 0;
     background-color: var(--ev-c-gray-1);
 }
-.container-status.running .status-dot { background-color: #98c379; }
+.container-status.running .status-dot { background-color: var(--color-success); }
 .container-status.exited .status-dot,
-.container-status.dead .status-dot  { background-color: #e06c75; }
+.container-status.dead .status-dot  { background-color: var(--color-danger); }
 .container-status.paused .status-dot,
-.container-status.restarting .status-dot { background-color: #e5c07b; }
+.container-status.restarting .status-dot { background-color: var(--color-warning); }
 
 .service-image {
     display: flex;
@@ -628,6 +635,7 @@ onUnmounted(() => clearInterval(statusInterval))
     gap: 6px;
     font-size: 12px;
     color: var(--ev-c-text-2);
+    font-family: var(--font-mono);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -635,6 +643,7 @@ onUnmounted(() => clearInterval(statusInterval))
 }
 
 .image-label {
+    font-family: var(--font-sans);
     font-size: 10px;
     color: var(--ev-c-text-3);
     background-color: var(--ev-c-gray-3);
@@ -646,7 +655,7 @@ onUnmounted(() => clearInterval(statusInterval))
 .service-id {
     font-size: 11px;
     color: var(--ev-c-text-3);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -659,7 +668,7 @@ onUnmounted(() => clearInterval(statusInterval))
     text-align: center;
     padding: 40px;
 }
-.state-message.error { color: #e06c75; }
+.state-message.error { color: var(--color-danger); }
 
 .host-row {
     display: flex;
@@ -690,7 +699,7 @@ onUnmounted(() => clearInterval(statusInterval))
     color: var(--ev-c-text-2);
 }
 .muted.error {
-    color: #e06c75;
+    color: var(--color-danger);
 }
 .btn-ghost.small {
     padding: 2px 8px;
@@ -720,14 +729,14 @@ onUnmounted(() => clearInterval(statusInterval))
     font-size: 12px;
 }
 .pkg-name {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     color: var(--ev-c-text-1);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
 }
 .pkg-versions {
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     color: var(--ev-c-text-2);
     font-size: 11px;
     display: flex;
@@ -735,7 +744,7 @@ onUnmounted(() => clearInterval(statusInterval))
     align-items: center;
 }
 .pkg-versions .arrow, .version-diff .arrow { color: var(--ev-c-text-3); }
-.pkg-versions .latest, .version-diff .latest { color: #98c379; }
+.pkg-versions .latest, .version-diff .latest { color: var(--color-success); }
 
 .msg {
     font-size: 12px;
@@ -743,27 +752,36 @@ onUnmounted(() => clearInterval(statusInterval))
     border-radius: 6px;
     margin-top: 6px;
 }
-.msg.success { color: #98c379; background-color: rgba(152, 195, 121, 0.08); }
-.msg.error { color: #e06c75; background-color: rgba(224, 108, 117, 0.08); }
+.msg.success { color: var(--color-success); background-color: var(--color-success-soft); }
+.msg.error { color: var(--color-danger); background-color: var(--color-danger-soft); }
 
 .version-diff {
-    font-family: ui-monospace, monospace;
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    font-family: var(--font-mono);
     font-size: 11px;
     color: var(--ev-c-text-2);
     padding: 2px 7px;
     border-radius: 4px;
-    background-color: rgba(152, 195, 121, 0.1);
+    background-color: var(--color-success-soft);
 }
 .version-diff.inline {
     background-color: transparent;
     padding: 0;
-    margin-left: 4px;
+}
+
+.controls-version {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    flex-wrap: wrap;
 }
 
 .btn-update {
     background-color: transparent;
-    color: #98c379;
-    border-color: #98c379;
+    color: var(--color-success);
+    border-color: var(--color-success);
 }
-.btn-update:hover:not(:disabled) { background-color: rgba(152, 195, 121, 0.1); }
+.btn-update:hover:not(:disabled) { background-color: var(--color-success-soft); }
 </style>

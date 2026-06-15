@@ -35,11 +35,16 @@
        Numeric scale is intentionally small: pick the closest, don't invent new sizes. */
 
     /* Brand + semantic colors */
-    --color-accent: #94C5CC;
+    --color-accent:       #94C5CC;
     --color-accent-hover: #7AAEB5;
-    --color-success: #98c379;
-    --color-danger:  #e06c75;
-    --color-warning: #e5c07b;
+    --color-accent-text:  #000;                 /* text drawn on filled --color-accent */
+    --color-accent-soft:  #94C5CC22;            /* low-alpha accent tint (chips, hovers) */
+    --color-success:      #98c379;
+    --color-success-soft: rgba(152, 195, 121, 0.10);
+    --color-danger:       #e06c75;
+    --color-danger-soft:  rgba(224, 108, 117, 0.10);
+    --color-warning:      #e5c07b;
+    --color-warning-soft: rgba(229, 192, 123, 0.10);
 
     /* Type scale */
     --font-size-page-title: 22px;   /* h1 on a view (e.g. node name) */
@@ -83,7 +88,48 @@
 
     /* Motion */
     --transition-fast: 150ms;
+
+    /* Font families — bundled via @fontsource (see src/renderer/src/main.js).
+       System fallbacks are kept so the UI stays readable if a font file fails to load. */
+    --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
+                 Roboto, 'Helvetica Neue', Ubuntu, sans-serif;
+    --font-mono: 'JetBrains Mono', ui-monospace, SFMono-Regular, 'SF Mono', Menlo,
+                 Consolas, 'Cascadia Code', monospace;
 }
+
+/* Light theme — overrides the dark defaults when html[data-theme="light"] is set.
+   Token NAMES stay the same so components don't need to know which theme is active. */
+:root[data-theme="light"] {
+    --ev-c-gray-1: #b4b4bc;
+    --ev-c-gray-2: #d0d0d8;
+    --ev-c-gray-3: #e8e8ee;
+
+    --ev-c-text-1: rgba(28, 28, 32, 0.92);
+    --ev-c-text-2: rgba(28, 28, 32, 0.60);
+    --ev-c-text-3: rgba(28, 28, 32, 0.42);
+
+    --color-background:      #ffffff;
+    --color-background-soft: #f5f5f8;
+    --color-background-mute: #ececf0;
+
+    --color-text: var(--ev-c-text-1);
+
+    /* Semantic colors retuned for light backgrounds — preserve hue, only luminance shifts.
+       Aim is "readable, not muddy": lighter than a pure dark recolor but still distinct from the dark-theme defaults. */
+    --color-accent:       #5aa3ad;
+    --color-accent-hover: #4a8c95;
+    --color-accent-text:  #ffffff;
+    --color-accent-soft:  rgba(90, 163, 173, 0.14);
+    --color-success:      #82c95a;
+    --color-success-soft: rgba(130, 201, 90, 0.14);
+    --color-danger:       #ef7363;
+    --color-danger-soft:  rgba(239, 115, 99, 0.14);
+    --color-warning:      #e6b148;
+    --color-warning-soft: rgba(230, 177, 72, 0.14);
+}
+
+:root[data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8c8d0; }
+:root[data-theme="light"] ::-webkit-scrollbar-thumb:hover { background: #b0b0b8; }
 
 *,
 *::before,
@@ -117,19 +163,7 @@ body {
     color: var(--color-text);
     background: var(--color-background);
     line-height: 1.6;
-    font-family:
-        Inter,
-        -apple-system,
-        BlinkMacSystemFont,
-        'Segoe UI',
-        Roboto,
-        Oxygen,
-        Ubuntu,
-        Cantarell,
-        'Fira Sans',
-        'Droid Sans',
-        'Helvetica Neue',
-        sans-serif;
+    font-family: var(--font-sans);
     text-rendering: optimizeLegibility;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;

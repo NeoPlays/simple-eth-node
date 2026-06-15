@@ -110,7 +110,7 @@ onMounted(() => load())
 .service-label {
     font-size: 12px;
     color: var(--ev-c-text-3);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
 }
 
 .yaml-editor {
@@ -122,7 +122,7 @@ onMounted(() => load())
     border: 1px solid var(--ev-c-gray-2);
     border-radius: 10px;
     color: var(--ev-c-text-1);
-    font-family: ui-monospace, monospace;
+    font-family: var(--font-mono);
     font-size: 13px;
     line-height: 1.6;
     resize: none;
@@ -132,7 +132,7 @@ onMounted(() => load())
 }
 
 .yaml-editor:focus {
-    border-color: #94C5CC;
+    border-color: var(--color-accent);
 }
 
 .state-message {
@@ -141,14 +141,14 @@ onMounted(() => load())
     text-align: center;
     padding: 40px;
 }
-.state-message.error { color: #e06c75; }
+.state-message.error { color: var(--color-danger); }
 
 .error-banner {
     padding: 10px 12px;
-    background-color: rgba(224, 108, 117, 0.1);
-    border: 1px solid #e06c75;
+    background-color: var(--color-danger-soft);
+    border: 1px solid var(--color-danger);
     border-radius: 8px;
-    color: #e06c75;
+    color: var(--color-danger);
     font-size: 13px;
     flex-shrink: 0;
 }
@@ -168,8 +168,8 @@ onMounted(() => load())
 
 .btn-accent {
     padding: 7px 14px;
-    background-color: #94C5CC;
-    color: #000;
+    background-color: var(--color-accent);
+    color: var(--color-accent-text);
     border: none;
     border-radius: 8px;
     cursor: pointer;
@@ -177,6 +177,6 @@ onMounted(() => load())
     font-weight: 500;
     transition: background-color 150ms, opacity 150ms;
 }
-.btn-accent:hover:not(:disabled) { background-color: #7AAEB5; }
+.btn-accent:hover:not(:disabled) { background-color: var(--color-accent-hover); }
 .btn-accent:disabled { opacity: 0.5; cursor: default; }
 </style>

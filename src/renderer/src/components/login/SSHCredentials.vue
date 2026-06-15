@@ -175,7 +175,7 @@ function copyCredentials(creds) {
 }
 
 .field input:focus {
-    border-color: #94C5CC;
+    border-color: var(--color-accent);
 }
 
 .actions {
@@ -202,11 +202,11 @@ button {
 }
 
 .btn-primary {
-    background-color: #94C5CC;
-    color: #000;
+    background-color: var(--color-accent);
+    color: var(--color-accent-text);
     width: 100%;
 }
-.btn-primary:hover { background-color: #7AAEB5; }
+.btn-primary:hover { background-color: var(--color-accent-hover); }
 
 .btn-secondary {
     background-color: var(--ev-c-gray-3);
@@ -223,10 +223,10 @@ button {
 
 .btn-danger {
     background-color: transparent;
-    color: #e06c75;
-    border: 1px solid #e06c75;
+    color: var(--color-danger);
+    border: 1px solid var(--color-danger);
 }
-.btn-danger:hover { background-color: rgba(224, 108, 117, 0.1); }
+.btn-danger:hover { background-color: var(--color-danger-soft); }
 
 button:disabled {
     opacity: 0.4;
@@ -236,10 +236,10 @@ button:disabled {
 
 .error-banner {
     padding: 10px 12px;
-    background-color: rgba(224, 108, 117, 0.1);
-    border: 1px solid #e06c75;
+    background-color: var(--color-danger-soft);
+    border: 1px solid var(--color-danger);
     border-radius: 8px;
-    color: #e06c75;
+    color: var(--color-danger);
     font-size: 13px;
 }
 
@@ -263,7 +263,7 @@ button:disabled {
     width: 14px;
     height: 14px;
     border: 2px solid var(--ev-c-gray-2);
-    border-top-color: #94C5CC;
+    border-top-color: var(--color-accent);
     border-radius: 50%;
     animation: spin 0.7s linear infinite;
 }
