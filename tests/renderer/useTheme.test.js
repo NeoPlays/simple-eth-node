@@ -2,14 +2,35 @@ import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { setActivePinia, createPinia } from 'pinia'
 import { useThemeStore } from '@stores/useTheme'
 
+// In-memory localStorage that mirrors the Web Storage API the store relies on.
+// We install this explicitly so the test does not depend on the test environment
+// exposing localStorage as a global (some happy-dom setups don't).
+function fakeLocalStorage() {
+    const store = new Map()
+    return {
+        getItem: (k) => (store.has(k) ? store.get(k) : null),
+        setItem: (k, v) => { store.set(k, String(v)) },
+        removeItem: (k) => { store.delete(k) },
+        clear: () => { store.clear() },
+    }
+}
+
+function ensureDocumentRoot() {
+    // happy-dom provides this, but if a future env doesn't we fall back to a stub.
+    if (typeof document !== 'undefined' && document.documentElement) return
+    globalThis.document = { documentElement: { dataset: {}, removeAttribute(name) { delete this.dataset[name.replace(/^data-/, '')] } } }
+}
+
 describe('useThemeStore', () => {
     let matchMediaMatches
 
     beforeEach(() => {
         setActivePinia(createPinia())
-        localStorage.clear()
+        globalThis.localStorage = fakeLocalStorage()
+        ensureDocumentRoot()
         document.documentElement.removeAttribute('data-theme')
         matchMediaMatches = false
+        globalThis.window = globalThis.window || {}
         window.matchMedia = vi.fn(() => ({ matches: matchMediaMatches }))
     })
 
