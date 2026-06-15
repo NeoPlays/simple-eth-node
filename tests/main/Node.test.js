@@ -372,6 +372,138 @@ describe('Node', () => {
         })
     })
 
+    describe('fetchControlsCommit', () => {
+        beforeEach(() => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+        })
+        it('runs git rev-parse HEAD against <controls>/ansible and returns the trimmed commit', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok('  deadbeef0123456789abcdef0123456789abcdef\n'))
+            const c = await node.fetchControlsCommit()
+            expect(c).toBe('deadbeef0123456789abcdef0123456789abcdef')
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).toContain('/opt/stereum/ansible')
+            expect(cmd).toContain('rev-parse HEAD')
+            // Fallback to bare controls path is part of the same command
+            expect(cmd).toContain('/opt/stereum')
+        })
+        it('lazy-loads settings when not yet fetched', async () => {
+            node.settings = null
+            node.sshService.exec
+                .mockResolvedValueOnce(ok('stereum_settings:\n  settings:\n    controls_install_path: /opt/stereum'))
+                .mockResolvedValueOnce(ok('abc123'))
+            const c = await node.fetchControlsCommit()
+            expect(c).toBe('abc123')
+            expect(node.sshService.exec).toHaveBeenCalledTimes(2)
+        })
+        it('throws when controls_install_path is missing', async () => {
+            node.settings = { stereum_settings: { settings: {} } }
+            await expect(node.fetchControlsCommit()).rejects.toThrow(/controls_install_path/)
+        })
+        it('throws when the repo cannot be read (empty stdout)', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok(''))
+            await expect(node.fetchControlsCommit()).rejects.toThrow(/not a git checkout/)
+        })
+        it('throws on non-zero rc with stderr', async () => {
+            node.sshService.exec.mockResolvedValueOnce(fail('not a repo'))
+            await expect(node.fetchControlsCommit()).rejects.toThrow('not a repo')
+        })
+        it('treats rc=null with non-empty stdout as success (signal-terminated child still produced output)', async () => {
+            node.sshService.exec.mockResolvedValueOnce({ rc: null, stdout: 'abc\n', stderr: '' })
+            await expect(node.fetchControlsCommit()).resolves.toBe('abc')
+        })
+    })
+
+    describe('fetchUpgradablePackages', () => {
+        it('parses apt list --upgradable output into structured objects', async () => {
+            const stdout = [
+                'curl/jammy-updates 7.81.0-1ubuntu1.20 amd64 [upgradable from: 7.81.0-1ubuntu1.10]',
+                'libssl3/jammy-security 3.0.2-0ubuntu1.18 amd64 [upgradable from: 3.0.2-0ubuntu1.15]',
+            ].join('\n')
+            node.sshService.exec.mockResolvedValueOnce(ok(stdout))
+            const pkgs = await node.fetchUpgradablePackages()
+            expect(pkgs).toEqual([
+                { name: 'curl', newVersion: '7.81.0-1ubuntu1.20', currentVersion: '7.81.0-1ubuntu1.10' },
+                { name: 'libssl3', newVersion: '3.0.2-0ubuntu1.18', currentVersion: '3.0.2-0ubuntu1.15' },
+            ])
+        })
+        it('returns an empty array when nothing is upgradable', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok(''))
+            await expect(node.fetchUpgradablePackages()).resolves.toEqual([])
+        })
+        it('ignores lines that do not match the apt format (e.g. "Listing..." headers)', async () => {
+            const stdout = [
+                'Listing...',
+                'random noise',
+                'curl/jammy 1.0 amd64 [upgradable from: 0.9]',
+            ].join('\n')
+            node.sshService.exec.mockResolvedValueOnce(ok(stdout))
+            const pkgs = await node.fetchUpgradablePackages()
+            expect(pkgs).toEqual([{ name: 'curl', newVersion: '1.0', currentVersion: '0.9' }])
+        })
+        it('uses the apt list command via SSH (tail trims the Listing… header)', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok(''))
+            await node.fetchUpgradablePackages()
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).toContain('apt list --upgradable')
+        })
+        it('treats rc=null as success (apt sometimes signals exit on shutdown)', async () => {
+            node.sshService.exec.mockResolvedValueOnce({ rc: null, stdout: '', stderr: '' })
+            await expect(node.fetchUpgradablePackages()).resolves.toEqual([])
+        })
+        it('throws on non-zero rc with stderr', async () => {
+            node.sshService.exec.mockResolvedValueOnce(fail('apt locked'))
+            await expect(node.fetchUpgradablePackages()).rejects.toThrow('apt locked')
+        })
+    })
+
+    describe('update playbook wrappers', () => {
+        beforeEach(() => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.sshService.exec.mockResolvedValue(ok('done'))
+        })
+
+        it('updateOS runs update-os with no extra vars', async () => {
+            await node.updateOS()
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).toContain('"stereum_role":"update-os"')
+            // No stereum extras for OS update
+            expect(cmd).not.toContain('"stereum":')
+        })
+
+        it('updateStereum runs update-stereum with no extra vars', async () => {
+            await node.updateStereum()
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).toContain('"stereum_role":"update-stereum"')
+            expect(cmd).not.toContain('"stereum":')
+        })
+
+        it('updatePackage passes stereum.update_package.name', async () => {
+            await node.updatePackage('curl')
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).toContain('"stereum_role":"update-package"')
+            expect(cmd).toContain('"update_package":{"name":"curl"}')
+        })
+
+        it('updateServices with no ids omits services_to_update entirely', async () => {
+            await node.updateServices()
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).toContain('"stereum_role":"update-services"')
+            expect(cmd).not.toContain('services_to_update')
+        })
+
+        it('updateServices with empty array also omits services_to_update', async () => {
+            await node.updateServices([])
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).not.toContain('services_to_update')
+        })
+
+        it('updateServices with ids forwards them as services_to_update', async () => {
+            await node.updateServices(['svc-a', 'svc-b'])
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).toContain('"update_services":{"services_to_update":["svc-a","svc-b"]}')
+        })
+    })
+
     describe('toDTO status field', () => {
         it('includes the current status in the full DTO', async () => {
             node._setStatus('connected')

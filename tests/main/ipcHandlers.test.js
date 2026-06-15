@@ -1,8 +1,38 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeWindow, fakeBrowserWindow } = vi.hoisted(() => {
+const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeWindow, fakeBrowserWindow, fakeNet, manifestState } = vi.hoisted(() => {
     const send = vi.fn()
     const fakeWindow = { webContents: { send } }
+    // manifestState lets tests control the next fake HTTP response without re-mocking
+    const manifestState = { body: '{}', statusCode: 200, error: null, calls: 0 }
+    const fakeNet = {
+        request: vi.fn((url) => {
+            manifestState.calls++
+            manifestState.lastUrl = url
+            const reqHandlers = {}
+            return {
+                on(event, cb) { reqHandlers[event] = cb },
+                end() {
+                    Promise.resolve().then(() => {
+                        if (manifestState.error) {
+                            reqHandlers.error?.(manifestState.error)
+                            return
+                        }
+                        const resHandlers = {}
+                        const res = {
+                            statusCode: manifestState.statusCode,
+                            on(event, cb) { resHandlers[event] = cb },
+                        }
+                        reqHandlers.response?.(res)
+                        Promise.resolve().then(() => {
+                            resHandlers.data?.(Buffer.from(manifestState.body))
+                            resHandlers.end?.()
+                        })
+                    })
+                },
+            }
+        }),
+    }
     return {
         handlers: {},
         fakeStorage: {
@@ -21,6 +51,12 @@ const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeWindow, fakeBrowse
             fetchContainerStatuses: vi.fn(),
             fetchRawServiceConfig: vi.fn(),
             writeServiceConfig: vi.fn(),
+            fetchControlsCommit: vi.fn(),
+            fetchUpgradablePackages: vi.fn(),
+            updateOS: vi.fn(),
+            updatePackage: vi.fn(),
+            updateServices: vi.fn(),
+            updateStereum: vi.fn(),
         },
         fakeNodeManager: {
             addNode: vi.fn(),
@@ -32,6 +68,8 @@ const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeWindow, fakeBrowse
         },
         fakeWindow,
         fakeBrowserWindow: { getAllWindows: vi.fn(() => [fakeWindow]) },
+        fakeNet,
+        manifestState,
     }
 })
 
@@ -40,6 +78,7 @@ vi.mock('electron', () => ({
         handle: vi.fn((channel, fn) => { handlers[channel] = fn }),
     },
     BrowserWindow: fakeBrowserWindow,
+    net: fakeNet,
 }))
 vi.mock('@main/store/StoreService', () => ({ default: fakeStorage }))
 vi.mock('@main/nodes/Node', () => ({ Node: function FakeNodeCtor() { return fakeNode } }))
@@ -61,10 +100,13 @@ describe('ipcHandlers', () => {
     it('registers all expected channels', () => {
         expect(Object.keys(handlers).sort()).toEqual([
             'disconnect-node',
+            'fetch-updates-manifest',
             'get-all-nodes',
             'get-container-statuses',
+            'get-controls-commit',
             'get-node',
             'get-raw-service-config',
+            'get-upgradable-packages',
             'import-server-from-stereum',
             'ping',
             'reconnect-node',
@@ -74,6 +116,10 @@ describe('ipcHandlers', () => {
             'stop-service',
             'store-get',
             'store-set',
+            'update-os',
+            'update-package',
+            'update-services',
+            'update-stereum',
             'write-service-config',
         ])
     })
@@ -225,5 +271,112 @@ describe('ipcHandlers', () => {
 
         fakeNodeManager.findNode.mockReturnValueOnce(null)
         await expect(handlers['write-service-config'](event, 'n', 's', 'c')).rejects.toThrow('Node not found')
+    })
+
+    describe('update handlers', () => {
+        const cases = [
+            ['update-os', 'updateOS', []],
+            ['update-stereum', 'updateStereum', []],
+        ]
+        for (const [channel, method] of cases) {
+            it(`${channel} routes to node.${method}`, async () => {
+                fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+                fakeNode[method].mockResolvedValueOnce('ok')
+                expect(await handlers[channel](event, 'n')).toBe('ok')
+                expect(fakeNode[method]).toHaveBeenCalledTimes(1)
+            })
+            it(`${channel} throws when node missing`, async () => {
+                fakeNodeManager.findNode.mockReturnValueOnce(null)
+                await expect(handlers[channel](event, 'n')).rejects.toThrow('Node not found')
+            })
+            it(`${channel} re-throws node errors`, async () => {
+                fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+                fakeNode[method].mockRejectedValueOnce(new Error('boom'))
+                await expect(handlers[channel](event, 'n')).rejects.toThrow('boom')
+            })
+        }
+
+        it('update-package forwards the package name', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.updatePackage.mockResolvedValueOnce('done')
+            expect(await handlers['update-package'](event, 'n', 'curl')).toBe('done')
+            expect(fakeNode.updatePackage).toHaveBeenCalledWith('curl')
+        })
+
+        it('update-services forwards an optional serviceIds array (null when omitted)', async () => {
+            fakeNodeManager.findNode.mockReturnValue(fakeNode)
+            fakeNode.updateServices.mockResolvedValue('done')
+
+            await handlers['update-services'](event, 'n')
+            expect(fakeNode.updateServices).toHaveBeenLastCalledWith(null)
+
+            await handlers['update-services'](event, 'n', ['s1', 's2'])
+            expect(fakeNode.updateServices).toHaveBeenLastCalledWith(['s1', 's2'])
+        })
+    })
+
+    describe('get-controls-commit / get-upgradable-packages', () => {
+        it('get-controls-commit delegates and propagates errors', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.fetchControlsCommit.mockResolvedValueOnce('deadbeef')
+            expect(await handlers['get-controls-commit'](event, 'n')).toBe('deadbeef')
+
+            fakeNodeManager.findNode.mockReturnValueOnce(null)
+            await expect(handlers['get-controls-commit'](event, 'n')).rejects.toThrow('Node not found')
+        })
+
+        it('get-upgradable-packages delegates and propagates errors', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.fetchUpgradablePackages.mockResolvedValueOnce([{ name: 'curl' }])
+            expect(await handlers['get-upgradable-packages'](event, 'n')).toEqual([{ name: 'curl' }])
+
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.fetchUpgradablePackages.mockRejectedValueOnce(new Error('dpkg lock'))
+            await expect(handlers['get-upgradable-packages'](event, 'n')).rejects.toThrow('dpkg lock')
+        })
+    })
+
+    describe('fetch-updates-manifest', () => {
+        beforeEach(async () => {
+            // Reset the module-level cache between manifest tests by re-importing fresh.
+            vi.resetModules()
+            for (const k of Object.keys(handlers)) delete handlers[k]
+            const fresh = await import('@main/ipcHandlers')
+            fresh.initializeIpcHandlers()
+            manifestState.calls = 0
+            manifestState.error = null
+            manifestState.statusCode = 200
+            manifestState.body = '{}'
+        })
+
+        it('fetches the manifest URL via electron.net and returns parsed JSON', async () => {
+            manifestState.body = JSON.stringify({ stereum: [{ name: '2.4.6', commit: 'abc' }] })
+            const r = await handlers['fetch-updates-manifest'](event)
+            expect(r).toEqual({ stereum: [{ name: '2.4.6', commit: 'abc' }] })
+            expect(manifestState.lastUrl).toBe('https://stereum.com/downloads/updates.json')
+        })
+
+        it('caches the response — subsequent calls do not hit the network', async () => {
+            manifestState.body = JSON.stringify({ ok: true })
+            await handlers['fetch-updates-manifest'](event)
+            await handlers['fetch-updates-manifest'](event)
+            await handlers['fetch-updates-manifest'](event)
+            expect(manifestState.calls).toBe(1)
+        })
+
+        it('rejects on non-2xx HTTP status', async () => {
+            manifestState.statusCode = 500
+            await expect(handlers['fetch-updates-manifest'](event)).rejects.toThrow(/HTTP 500/)
+        })
+
+        it('rejects on transport error', async () => {
+            manifestState.error = new Error('ECONNREFUSED')
+            await expect(handlers['fetch-updates-manifest'](event)).rejects.toThrow('ECONNREFUSED')
+        })
+
+        it('rejects on malformed JSON', async () => {
+            manifestState.body = 'not json'
+            await expect(handlers['fetch-updates-manifest'](event)).rejects.toThrow(/parse failed/)
+        })
     })
 })
