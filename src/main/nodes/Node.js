@@ -126,19 +126,19 @@ export class Node {
 
     async startService(serviceId) {
         return this.runPlaybook('manage-service', {
-            stereum: { manage_service: { state: 'started', configuration: { id: serviceId } } }
+            manage_service: { state: 'started', configuration: { id: serviceId } }
         })
     }
 
     async stopService(serviceId) {
         return this.runPlaybook('manage-service', {
-            stereum: { manage_service: { state: 'stopped', configuration: { id: serviceId } } }
+            manage_service: { state: 'stopped', configuration: { id: serviceId } }
         })
     }
 
     async restartService(serviceId) {
         return this.runPlaybook('manage-service', {
-            stereum: { manage_service: { state: 'restarted', configuration: { id: serviceId } } }
+            manage_service: { state: 'restarted', configuration: { id: serviceId } }
         })
     }
 
@@ -184,27 +184,29 @@ export class Node {
     }
 
     async updatePackage(name) {
-        return this.runPlaybook('update-package', { stereum: { update_package: { name } } })
+        return this.runPlaybook('update-package', { update_package: { name } })
     }
 
     async updateServices(serviceIds = null) {
-        const extra = serviceIds?.length
-            ? { stereum: { update_services: { services_to_update: serviceIds } } }
+        const topLevel = serviceIds?.length
+            ? { services_to_update: serviceIds.length === 1 ? serviceIds[0] : serviceIds }
             : {}
-        return this.runPlaybook('update-services', extra)
+        return this.runPlaybook('update-services', {}, topLevel)
     }
 
     async updateStereum() {
         return this.runPlaybook('update-stereum')
     }
 
-    async runPlaybook(role, extraVars = {}) {
+    async runPlaybook(role, stereumArgs = {}, topLevelVars = {}) {
         if (!this.settings) await this.fetchSettings()
 
         const controlsPath = this.settings?.stereum_settings?.settings?.controls_install_path
         if (!controlsPath) throw new Error('controls_install_path not found in stereum settings')
 
-        const vars = JSON.stringify({ stereum_role: role, ...extraVars })
+        const payload = { stereum_role: role, ...topLevelVars }
+        if (Object.keys(stereumArgs).length) payload.stereum_args = stereumArgs
+        const vars = JSON.stringify(payload)
         const escaped = vars.replace(/'/g, `'"'"'`)
         const command = `ANSIBLE_LOAD_CALLBACK_PLUGINS=1 ANSIBLE_STDOUT_CALLBACK=stereumjson ANSIBLE_DEPRECATION_WARNINGS=false ansible-playbook --connection=local --inventory 127.0.0.1, --extra-vars '${escaped}' ${controlsPath}/ansible/controls/genericPlaybook.yaml`
 

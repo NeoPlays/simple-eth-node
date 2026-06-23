@@ -528,10 +528,18 @@ describe('Node', () => {
             expect(cmd).not.toContain('services_to_update')
         })
 
-        it('updateServices with ids forwards them as services_to_update', async () => {
+        it('updateServices with a single id forwards it as a top-level string', async () => {
+            await node.updateServices(['svc-a'])
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).toContain('"services_to_update":"svc-a"')
+            expect(cmd).not.toContain('stereum_args')
+        })
+
+        it('updateServices with multiple ids forwards them as a top-level array', async () => {
             await node.updateServices(['svc-a', 'svc-b'])
             const cmd = node.sshService.exec.mock.calls[0][0]
-            expect(cmd).toContain('"update_services":{"services_to_update":["svc-a","svc-b"]}')
+            expect(cmd).toContain('"services_to_update":["svc-a","svc-b"]')
+            expect(cmd).not.toContain('stereum_args')
         })
     })
 
