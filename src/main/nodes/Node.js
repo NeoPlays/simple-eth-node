@@ -206,7 +206,7 @@ export class Node {
 
         const vars = JSON.stringify({ stereum_role: role, ...extraVars })
         const escaped = vars.replace(/'/g, `'"'"'`)
-        const command = `ANSIBLE_PYTHON_INTERPRETER=auto_silent ansible-playbook --connection=local --inventory 127.0.0.1, --extra-vars '${escaped}' ${controlsPath}/ansible/controls/genericPlaybook.yaml`
+        const command = `ANSIBLE_LOAD_CALLBACK_PLUGINS=1 ANSIBLE_STDOUT_CALLBACK=stereumjson ANSIBLE_DEPRECATION_WARNINGS=false ansible-playbook --connection=local --inventory 127.0.0.1, --extra-vars '${escaped}' ${controlsPath}/ansible/controls/genericPlaybook.yaml`
 
         const response = await this.sshService.exec(command, true)
         if (response.rc !== null && response.rc !== 0) throw new Error(response.stderr || response.stdout || `Playbook '${role}' failed`)
