@@ -4,6 +4,7 @@ import { createRouter, createWebHashHistory } from "vue-router";
 import LoginView from "@views/LoginView.vue";
 import NodeManagerView from "@views/NodeManagerView.vue";
 import NodeView from "@views/NodeView.vue";
+import UpdatesView from "@views/UpdatesView.vue";
 import ServiceConfigView from "@views/ServiceConfigView.vue";
 import ServiceLogsView from "@views/ServiceLogsView.vue";
 
@@ -22,6 +23,11 @@ const routes = [
     path: "/node/:id",
     name: "Node",
     component: NodeView
+  },
+  {
+    path: "/node/:id/updates",
+    name: "Updates",
+    component: UpdatesView
   },
   {
     path: "/node/:id/service/:serviceId",

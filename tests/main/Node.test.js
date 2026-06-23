@@ -516,30 +516,182 @@ describe('Node', () => {
         })
 
         it('updateServices with no ids omits services_to_update entirely', async () => {
-            await node.updateServices()
+            await node._runServicesUpdate()
             const cmd = node.sshService.exec.mock.calls[0][0]
             expect(cmd).toContain('"stereum_role":"update-services"')
             expect(cmd).not.toContain('services_to_update')
         })
 
         it('updateServices with empty array also omits services_to_update', async () => {
-            await node.updateServices([])
+            await node._runServicesUpdate([])
             const cmd = node.sshService.exec.mock.calls[0][0]
             expect(cmd).not.toContain('services_to_update')
         })
 
         it('updateServices with a single id forwards it as a top-level string', async () => {
-            await node.updateServices(['svc-a'])
+            await node._runServicesUpdate(['svc-a'])
             const cmd = node.sshService.exec.mock.calls[0][0]
             expect(cmd).toContain('"services_to_update":"svc-a"')
             expect(cmd).not.toContain('stereum_args')
         })
 
         it('updateServices with multiple ids forwards them as a top-level array', async () => {
-            await node.updateServices(['svc-a', 'svc-b'])
+            await node._runServicesUpdate(['svc-a', 'svc-b'])
             const cmd = node.sshService.exec.mock.calls[0][0]
             expect(cmd).toContain('"services_to_update":["svc-a","svc-b"]')
             expect(cmd).not.toContain('stereum_args')
+        })
+
+        it('updateServices restarts services changed during its window plus a 10s buffer', async () => {
+            vi.spyOn(node, '_timestamp').mockReturnValueOnce(3000).mockReturnValueOnce(3015)
+            const coreSpy = vi.spyOn(node, '_runServicesUpdate').mockResolvedValue()
+            const restartSpy = vi.spyOn(node, 'restartChangedServices').mockResolvedValue([{ serviceId: 'svc-a', ok: true }])
+            const restarted = await node.updateServices(['svc-a'])
+            expect(coreSpy).toHaveBeenCalledWith(['svc-a'])
+            expect(restartSpy).toHaveBeenCalledWith(25, { prune: true })
+            expect(restarted).toEqual([{ serviceId: 'svc-a', ok: true }])
+        })
+
+        it('updateStereum runs both update-stereum and update-changes', async () => {
+            vi.spyOn(node, 'restartChangedServices').mockResolvedValue([])
+            await node.updateStereum()
+            const cmds = node.sshService.exec.mock.calls.map(c => c[0])
+            expect(cmds.some(c => c.includes('"stereum_role":"update-stereum"'))).toBe(true)
+            expect(cmds.some(c => c.includes('"stereum_role":"update-changes"'))).toBe(true)
+        })
+
+        it('updateStereum with a commit pins override_gitcommit', async () => {
+            vi.spyOn(node, 'restartChangedServices').mockResolvedValue([])
+            await node.updateStereum('abc123')
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).toContain('"stereum_role":"update-stereum"')
+            expect(cmd).toContain('"override_gitcommit":"abc123"')
+        })
+
+        it('updateStereum without a commit omits override_gitcommit', async () => {
+            vi.spyOn(node, 'restartChangedServices').mockResolvedValue([])
+            await node.updateStereum()
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).not.toContain('override_gitcommit')
+        })
+
+        it('updateStereum restarts services changed during its window plus a 10s buffer', async () => {
+            vi.spyOn(node, '_timestamp').mockReturnValueOnce(2000).mockReturnValueOnce(2020)
+            vi.spyOn(node, '_runStereumUpdate').mockResolvedValue()
+            const restartSpy = vi.spyOn(node, 'restartChangedServices').mockResolvedValue([{ serviceId: 'svc', ok: true }])
+            const restarted = await node.updateStereum('c1')
+            expect(node._runStereumUpdate).toHaveBeenCalledWith('c1')
+            expect(restartSpy).toHaveBeenCalledWith(30, { prune: true })
+            expect(restarted).toEqual([{ serviceId: 'svc', ok: true }])
+        })
+
+        it('runAllUpdates updates stereum then services and returns elapsed seconds', async () => {
+            vi.spyOn(node, '_timestamp').mockReturnValueOnce(1000).mockReturnValueOnce(1042)
+            const stereumSpy = vi.spyOn(node, '_runStereumUpdate')
+            const servicesSpy = vi.spyOn(node, '_runServicesUpdate')
+            const elapsed = await node.runAllUpdates('c1')
+            expect(stereumSpy).toHaveBeenCalledWith('c1')
+            expect(servicesSpy).toHaveBeenCalled()
+            expect(elapsed).toBe(42)
+        })
+
+        it('runAllUpdates does not restart mid-sequence (single restart left to runFullUpdate)', async () => {
+            vi.spyOn(node, '_runStereumUpdate').mockResolvedValue()
+            vi.spyOn(node, '_runServicesUpdate').mockResolvedValue()
+            const restartSpy = vi.spyOn(node, 'restartChangedServices')
+            await node.runAllUpdates()
+            expect(restartSpy).not.toHaveBeenCalled()
+        })
+
+        it('runFullUpdate restarts services changed during the window plus a 10s buffer', async () => {
+            vi.spyOn(node, '_timestamp').mockReturnValueOnce(1000).mockReturnValueOnce(1030)
+            vi.spyOn(node, '_runStereumUpdate').mockResolvedValue()
+            vi.spyOn(node, '_runServicesUpdate').mockResolvedValue()
+            const restartSpy = vi.spyOn(node, 'restartChangedServices').mockResolvedValue([{ serviceId: 'x', ok: true }])
+            const result = await node.runFullUpdate('c1')
+            expect(restartSpy).toHaveBeenCalledWith(40, { prune: true })
+            expect(result).toEqual({ elapsed: 30, restarted: [{ serviceId: 'x', ok: true }] })
+        })
+    })
+
+    describe('restartChangedServices', () => {
+        beforeEach(() => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+        })
+
+        it('findChangedServiceIds scopes the find to the timeframe and parses filenames to ids', async () => {
+            node.sshService.exec.mockResolvedValue(ok('aaa.yaml\nbbb.yaml\n'))
+            const ids = await node.findChangedServiceIds(30)
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            expect(cmd).toContain('find /etc/stereum/services')
+            expect(cmd).toContain('-newermt "30 seconds ago"')
+            expect(ids).toEqual(['aaa', 'bbb'])
+        })
+
+        it('rejects a non-positive or non-numeric timeframe', async () => {
+            await expect(node.findChangedServiceIds(0)).rejects.toThrow(/positive/)
+            await expect(node.findChangedServiceIds(-5)).rejects.toThrow(/positive/)
+            await expect(node.findChangedServiceIds('abc')).rejects.toThrow(/positive/)
+        })
+
+        it('restarts every changed service and prunes by default', async () => {
+            node.sshService.exec.mockImplementation(async (cmd) => {
+                if (cmd.includes('find /etc/stereum/services')) return ok('svc-a.yaml\nsvc-b.yaml\n')
+                return ok('done')
+            })
+            const restartSpy = vi.spyOn(node, 'restartService')
+            const pruneSpy = vi.spyOn(node, 'pruneDocker')
+            const results = await node.restartChangedServices(60)
+            expect(restartSpy).toHaveBeenCalledTimes(2)
+            expect(restartSpy).toHaveBeenCalledWith('svc-a')
+            expect(restartSpy).toHaveBeenCalledWith('svc-b')
+            expect(pruneSpy).toHaveBeenCalledTimes(1)
+            expect(results).toEqual([
+                { serviceId: 'svc-a', ok: true },
+                { serviceId: 'svc-b', ok: true },
+            ])
+        })
+
+        it('prune removes unused images and volumes (mirrors the role)', async () => {
+            node.sshService.exec.mockImplementation(async (cmd) => {
+                if (cmd.includes('find /etc/stereum/services')) return ok('svc-a.yaml\n')
+                return ok('done')
+            })
+            await node.restartChangedServices(60)
+            const pruneCall = node.sshService.exec.mock.calls.find(c => c[0].includes('docker system prune'))
+            expect(pruneCall[0]).toContain('docker system prune -af --volumes')
+        })
+
+        it('skips restarts and prune when nothing changed', async () => {
+            node.sshService.exec.mockResolvedValue(ok('\n'))
+            const pruneSpy = vi.spyOn(node, 'pruneDocker')
+            const results = await node.restartChangedServices(60)
+            expect(results).toEqual([])
+            expect(pruneSpy).not.toHaveBeenCalled()
+        })
+
+        it('can skip the prune step', async () => {
+            node.sshService.exec.mockImplementation(async (cmd) => {
+                if (cmd.includes('find /etc/stereum/services')) return ok('svc-a.yaml\n')
+                return ok('done')
+            })
+            const pruneSpy = vi.spyOn(node, 'pruneDocker')
+            await node.restartChangedServices(60, { prune: false })
+            expect(pruneSpy).not.toHaveBeenCalled()
+        })
+
+        it('captures a failed restart without aborting the others', async () => {
+            node.sshService.exec.mockImplementation(async (cmd) => {
+                if (cmd.includes('find /etc/stereum/services')) return ok('good.yaml\nbad.yaml\n')
+                return ok('done')
+            })
+            vi.spyOn(node, 'restartService').mockImplementation(async (id) => {
+                if (id === 'bad') throw new Error('restart blew up')
+                return ok('done')
+            })
+            const results = await node.restartChangedServices(60)
+            expect(results).toContainEqual({ serviceId: 'good', ok: true })
+            expect(results).toContainEqual({ serviceId: 'bad', ok: false, error: 'restart blew up' })
         })
     })
 

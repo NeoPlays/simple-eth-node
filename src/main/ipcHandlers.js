@@ -149,6 +149,17 @@ export function initializeIpcHandlers() {
         }
     });
 
+    ipcMain.handle('restart-changed-services', async (_, nodeId, timeScopeSeconds, prune = true) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.restartChangedServices(timeScopeSeconds, { prune })
+        } catch (error) {
+            log.error('restart-changed-services error:', error)
+            throw error
+        }
+    });
+
     ipcMain.handle('fetch-updates-manifest', async () => {
         try {
             return await fetchUpdatesManifest()
@@ -237,13 +248,24 @@ export function initializeIpcHandlers() {
         }
     });
 
-    ipcMain.handle('update-stereum', async (_, nodeId) => {
+    ipcMain.handle('update-stereum', async (_, nodeId, commit = null) => {
         try {
             const node = nodeManager.findNode(nodeId)
             if (!node) throw new Error('Node not found')
-            return await node.updateStereum()
+            return await node.updateStereum(commit)
         } catch (error) {
             log.error('update-stereum error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('run-full-update', async (_, nodeId, commit = null, prune = true) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.runFullUpdate(commit, { prune })
+        } catch (error) {
+            log.error('run-full-update error:', error)
             throw error
         }
     });

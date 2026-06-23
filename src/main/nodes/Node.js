@@ -143,6 +143,64 @@ export class Node {
     }
 
     /**
+     * Find the service config files under /etc/stereum/services that were modified
+     * within the last `timeScopeSeconds` seconds and return their service ids
+     * (the filename stem is the UUID — same convention as fetchServices).
+     * Mirrors the selection logic of the upstream `restart-services` Ansible role.
+     * @param {number} timeScopeSeconds
+     * @returns {Promise<string[]>} ids of changed services
+     */
+    async findChangedServiceIds(timeScopeSeconds) {
+        const scope = Math.floor(Number(timeScopeSeconds))
+        if (!Number.isFinite(scope) || scope <= 0) throw new Error('timeScopeSeconds must be a positive number')
+        // GNU find on the remote: files newer than (now - scope). "-printf '%f'" yields the bare filename.
+        const cmd = `find /etc/stereum/services -maxdepth 1 -type f -name '*.yaml' -newermt "${scope} seconds ago" -printf '%f\\n'`
+        const response = await this.sshService.exec(cmd)
+        if (response.rc !== 0 && response.rc !== null) throw new Error(response.stderr || 'findChangedServiceIds failed')
+        return response.stdout
+            .split('\n')
+            .map(s => s.trim())
+            .filter(Boolean)
+            .map(f => f.replace(/\.yaml$/, ''))
+    }
+
+    /**
+     * Restart every service whose config changed within the last `timeScopeSeconds`
+     * seconds. Same behaviour as the upstream `restart-services` role, but the
+     * restarts run in parallel instead of one after another.
+     * @param {number} timeScopeSeconds - lookback window in seconds
+     * @param {{ prune?: boolean }} [opts] - run a `docker system prune` afterwards (default true, mirrors the role)
+     * @returns {Promise<{ serviceId: string, ok: boolean, error?: string }[]>} per-service outcome
+     */
+    async restartChangedServices(timeScopeSeconds, { prune = true } = {}) {
+        const serviceIds = await this.findChangedServiceIds(timeScopeSeconds)
+        const results = await Promise.all(
+            serviceIds.map(async (serviceId) => {
+                try {
+                    await this.restartService(serviceId)
+                    return { serviceId, ok: true }
+                } catch (e) {
+                    return { serviceId, ok: false, error: e?.message || String(e) }
+                }
+            })
+        )
+        if (prune && serviceIds.length) await this.pruneDocker()
+        return results
+    }
+
+    /**
+     * Mirror the role's final `docker_prune`: remove all unused containers, images
+     * (not just dangling), networks, volumes, and build cache.
+     */
+    async pruneDocker() {
+        const response = await this.sshService.exec('docker system prune -af --volumes', true, {
+            timeoutMs: SSHService.PLAYBOOK_TIMEOUT_MS,
+        })
+        if (response.rc !== 0 && response.rc !== null) throw new Error(response.stderr || 'docker prune failed')
+        return response.stdout
+    }
+
+    /**
      * Stream `docker logs -f` for a service. Returns a handle with .abort().
      * @param {string} serviceId
      * @param {{ tail?: number, onLine: (line: string) => void, onClose?: (info: { rc?: number, error?: Error }) => void }} opts
@@ -187,15 +245,93 @@ export class Node {
         return this.runPlaybook('update-package', { update_package: { name } })
     }
 
-    async updateServices(serviceIds = null) {
+    /**
+     * Run the `update-services` role without restarting. A single id is forwarded as a
+     * bare string, multiple ids as an array (top-level `services_to_update`); no ids
+     * updates all services. Pure — the caller decides when to restart.
+     */
+    async _runServicesUpdate(serviceIds = null) {
         const topLevel = serviceIds?.length
             ? { services_to_update: serviceIds.length === 1 ? serviceIds[0] : serviceIds }
             : {}
         return this.runPlaybook('update-services', {}, topLevel)
     }
 
-    async updateStereum() {
-        return this.runPlaybook('update-stereum')
+    /**
+     * Update service images and restart every service whose config changed as a result,
+     * in parallel. Standalone entry point for the per-service / "update all" actions —
+     * without the restart the new image is pulled but the running container keeps the old one.
+     * @param {string[]|null} serviceIds - ids to update; all services when null/empty
+     * @param {{ prune?: boolean }} [opts]
+     * @returns {Promise<{ serviceId: string, ok: boolean, error?: string }[]>} restarted services
+     */
+    async updateServices(serviceIds = null, { prune = true } = {}) {
+        const before = this._timestamp()
+        await this._runServicesUpdate(serviceIds)
+        const elapsed = this._timestamp() - before
+        return this.restartChangedServices(elapsed + 10, { prune })
+    }
+
+    /**
+     * Run the stereum control-update playbooks without restarting anything:
+     * `update-stereum` (optionally pinned to a commit) followed by `update-changes`,
+     * which applies the config migrations the new controls ship. Pure — the caller
+     * decides when to restart the affected services.
+     * @param {string|null} commit - optional target commit (override_gitcommit); latest when null
+     */
+    async _runStereumUpdate(commit = null) {
+        await this.runPlaybook('update-stereum', commit ? { override_gitcommit: commit } : {})
+        await this.runPlaybook('update-changes')
+    }
+
+    /**
+     * Update the stereum controls and restart every service whose config changed as a
+     * result (e.g. by `update-changes`), in parallel. This is the standalone entry point
+     * the "Update Node Controls" action uses — without the restart, the config migrations
+     * `update-changes` applies would not take effect until the next manual restart.
+     * @param {string|null} commit - optional target stereum commit
+     * @param {{ prune?: boolean }} [opts]
+     * @returns {Promise<{ serviceId: string, ok: boolean, error?: string }[]>} restarted services
+     */
+    async updateStereum(commit = null, { prune = true } = {}) {
+        const before = this._timestamp()
+        await this._runStereumUpdate(commit)
+        const elapsed = this._timestamp() - before
+        return this.restartChangedServices(elapsed + 10, { prune })
+    }
+
+    /** Current unix timestamp in seconds (rounded up), matching the launcher's getTimeStamp. */
+    _timestamp() {
+        return Math.ceil(Date.now() / 1000)
+    }
+
+    /**
+     * Run the full update sequence (stereum controls + service images) and return how
+     * many seconds it took. Mirrors the launcher's NodeUpdates.runAllUpdates. No restart
+     * happens here — that's done once over the whole window by runFullUpdate, so the
+     * pure `_runStereumUpdate` is used to avoid restarting mid-sequence.
+     * @param {string|null} commit - optional target stereum commit
+     * @returns {Promise<number>} elapsed seconds
+     */
+    async runAllUpdates(commit = null) {
+        const before = this._timestamp()
+        await this._runStereumUpdate(commit)
+        await this._runServicesUpdate()
+        return this._timestamp() - before
+    }
+
+    /**
+     * Full update cycle: run all updates, then restart every service whose config
+     * changed during the update window (plus a 10s buffer, matching the launcher's
+     * `restart_time_scope = seconds + 10`). Restarts run in parallel.
+     * @param {string|null} commit - optional target stereum commit
+     * @param {{ prune?: boolean }} [opts]
+     * @returns {Promise<{ elapsed: number, restarted: { serviceId: string, ok: boolean, error?: string }[] }>}
+     */
+    async runFullUpdate(commit = null, { prune = true } = {}) {
+        const elapsed = await this.runAllUpdates(commit)
+        const restarted = await this.restartChangedServices(elapsed + 10, { prune })
+        return { elapsed, restarted }
     }
 
     async runPlaybook(role, stereumArgs = {}, topLevelVars = {}) {
