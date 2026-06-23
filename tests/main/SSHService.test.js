@@ -452,6 +452,36 @@ describe('SSHService', () => {
             // advance past the timeout — should not double-reject
             await vi.advanceTimersByTimeAsync(SSHService.EXEC_TIMEOUT_MS + 1)
         })
+
+        it('honors a per-call timeoutMs override', async () => {
+            const svc = new SSHService(makeParams())
+            svc.connections = [{ conn: { exec: vi.fn() }, sessionCount: 0 }]
+            const promise = svc.exec('hang', false, { timeoutMs: 60_000 })
+            const assertion = expect(promise).rejects.toMatchObject({ rc: -1, message: /timeout/i })
+            // not yet — default would have fired here
+            await vi.advanceTimersByTimeAsync(SSHService.EXEC_TIMEOUT_MS)
+            expect(svc.connections.length).toBe(1)
+            // crosses the override
+            await vi.advanceTimersByTimeAsync(60_000 - SSHService.EXEC_TIMEOUT_MS)
+            await assertion
+        })
+
+        it('re-arms the idle timer on output so a chatty long command never trips it', async () => {
+            const svc = new SSHService(makeParams())
+            const stream = new FakeStream()
+            svc.connections = [{ conn: { exec: (cmd, cb) => { cb(null, stream) }, }, sessionCount: 0 }]
+            const promise = svc.exec('playbook', false, { timeoutMs: SSHService.EXEC_TIMEOUT_MS })
+            await vi.advanceTimersByTimeAsync(0)
+            // emit a chunk just before each timeout boundary — each resets the timer
+            for (let i = 0; i < 5; i++) {
+                await vi.advanceTimersByTimeAsync(SSHService.EXEC_TIMEOUT_MS - 1)
+                stream.emit('data', Buffer.from(`task ${i}\n`))
+            }
+            stream.emit('close', 0)
+            const r = await promise
+            expect(r.rc).toBe(0)
+            expect(r.stdout).toContain('task 4')
+        })
     })
 
     describe('reconnect (single attempt)', () => {

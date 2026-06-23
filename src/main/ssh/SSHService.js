@@ -42,6 +42,10 @@ export class SSHConnection {
 export class SSHService {
     static MAX_SESSION_COUNT = 5
     static EXEC_TIMEOUT_MS = 15_000
+    // Idle window for long-running playbook execs. The timer resets on every output
+    // chunk, so this only needs to cover the longest *silent* stretch (e.g. an apt
+    // upgrade or docker image pull), not the playbook's total runtime.
+    static PLAYBOOK_TIMEOUT_MS = 10 * 60_000
     static KEEPALIVE_INTERVAL_MS = 10_000
     static KEEPALIVE_COUNT_MAX = 3
     static READY_TIMEOUT_MS = 15_000
@@ -145,7 +149,7 @@ export class SSHService {
         throw new Error('No available SSH connection')
     }
 
-    async exec(command, useSudo = true) {
+    async exec(command, useSudo = true, { timeoutMs = SSHService.EXEC_TIMEOUT_MS } = {}) {
         if (useSudo) {
             command = "sudo " + command
         }
@@ -169,19 +173,27 @@ export class SSHService {
               };
               let settled = false
               let activeStream = null
-              const timer = setTimeout(() => {
-                if (settled) return
-                settled = true
-                log.warn('SSH :: EXEC TIMEOUT ::', command)
-                try { activeStream?.close() } catch { /* ignore */ }
-                reject({ rc: -1, code: 1, message: 'SSH exec timeout' })
-              }, SSHService.EXEC_TIMEOUT_MS)
+              let timer = null
+              // Idle timeout: re-armed on every output chunk. A live but long-running
+              // command keeps producing output and never trips it; a dead socket goes
+              // silent and rejects after timeoutMs.
+              const arm = () => {
+                if (timer) clearTimeout(timer)
+                timer = setTimeout(() => {
+                  if (settled) return
+                  settled = true
+                  log.warn('SSH :: EXEC TIMEOUT (idle) ::', command)
+                  try { activeStream?.close() } catch { /* ignore */ }
+                  reject({ rc: -1, code: 1, message: 'SSH exec timeout' })
+                }, timeoutMs)
+              }
+              arm()
 
               conn.exec(command, (err, stream) => {
                 if (err) {
                   if (settled) return
                   settled = true
-                  clearTimeout(timer)
+                  if (timer) clearTimeout(timer)
                   log.error("ERROR:", err);
                   return reject(err);
                 }
@@ -190,15 +202,17 @@ export class SSHService {
                   .on("close", (code) => {
                     if (settled) return
                     settled = true
-                    clearTimeout(timer)
+                    if (timer) clearTimeout(timer)
                     data.rc = code;
                     resolve(data);
                   })
                   .on("data", (stdout) => {
                     data.stdout += stdout.toString("utf8");
+                    arm();
                   })
                   .stderr.on("data", (stderr) => {
                     data.stderr += stderr.toString("utf8");
+                    arm();
                   });
               });
         })
