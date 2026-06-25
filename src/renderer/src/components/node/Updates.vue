@@ -215,6 +215,7 @@ function shortServiceName(service) {
 
 const availableUpdatesText = computed(() => {
     const lines = upgradableServices.value.map(s => `- ${shortServiceName(s)} to ${serviceUpdate(s).latest}`)
+    if (controlsInfo.value?.upgradable) lines.push(`- Stereum to ${controlsInfo.value.latestVersion}`)
     if (osPackages.value?.length) lines.push('- OS Updates')
     return lines.join('\n')
 })
