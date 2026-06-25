@@ -238,7 +238,7 @@ export class Node {
     }
 
     async updateOS() {
-        return this.runPlaybook('update-os')
+        return this.runPlaybook('update-os', { only_os_updates: true })
     }
 
     async updatePackage(name) {
