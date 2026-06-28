@@ -24,10 +24,7 @@ jobs:
           cache: npm
 
       - name: Install dependencies
-        run: npm ci --ignore-scripts
-        # --ignore-scripts skips electron-builder's native rebuild step.
-        # Tests run against system Node, not the Electron runtime, so the
-        # rebuild adds CI time without affecting test correctness.
+        run: npm ci
 
       - name: Run tests with coverage
         run: npm run test:coverage

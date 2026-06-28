@@ -17,14 +17,11 @@
         "start": "electron-vite preview",
         "dev": "electron-vite dev -w",
         "build": "electron-vite build",
-        "postinstall": "electron-builder install-app-deps",
+        "postinstall": "node node_modules/electron/install.js && electron-builder install-app-deps",
         "build:unpack": "npm run build && electron-builder --dir",
         "build:win": "npm run build && electron-builder --win",
         "build:mac": "npm run build && electron-builder --mac",
         "build:linux": "npm run build && electron-builder --linux"
-    },
-    "overrides": {
-        "nan": "github:gdavidkov/nan#fix/external-value-v8-13"
     },
     "dependencies": {
         "@electron-toolkit/preload": "^3.0.2",
@@ -47,7 +44,7 @@
         "@vue/test-utils": "^2.4.11",
         "electron": "^42.5.0",
         "electron-builder": "^26.15.3",
-        "electron-vite": "^5.0.0",
+        "electron-vite": "^6.0.0-beta.1",
         "eslint": "^10.6.0",
         "eslint-plugin-vue": "^10.9.2",
         "happy-dom": "^20.10.6",
@@ -55,5 +52,14 @@
         "vite": "^7.3.6",
         "vitest": "^4.1.9",
         "vue": "^3.5.39"
+    },
+    "allowScripts": {
+        "cpu-features@0.0.10": true,
+        "electron@42.5.0": true,
+        "electron-winstaller@5.4.0": true,
+        "esbuild@0.28.1": true,
+        "esbuild@0.25.12": true,
+        "fsevents@2.3.3": true,
+        "ssh2@1.17.0": true
     }
 }
