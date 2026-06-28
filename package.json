@@ -43,17 +43,17 @@
         "@electron-toolkit/eslint-config": "^2.1.0",
         "@electron-toolkit/eslint-config-prettier": "^3.0.0",
         "@vitejs/plugin-vue": "^6.0.7",
-        "@vitest/coverage-v8": "^4.1.8",
+        "@vitest/coverage-v8": "^4.1.9",
         "@vue/test-utils": "^2.4.11",
-        "electron": "^42.4.0",
-        "electron-builder": "^26.15.2",
+        "electron": "^42.5.0",
+        "electron-builder": "^26.15.3",
         "electron-vite": "^5.0.0",
-        "eslint": "^10.4.1",
+        "eslint": "^10.6.0",
         "eslint-plugin-vue": "^10.9.2",
-        "happy-dom": "^20.10.2",
-        "prettier": "^3.8.4",
-        "vite": "^7.1.7",
-        "vitest": "^4.1.8",
-        "vue": "^3.5.35"
+        "happy-dom": "^20.10.6",
+        "prettier": "^3.9.1",
+        "vite": "^7.3.6",
+        "vitest": "^4.1.9",
+        "vue": "^3.5.39"
     }
 }
