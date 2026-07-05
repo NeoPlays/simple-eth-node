@@ -235,8 +235,11 @@ export class Node {
      * back to `NAME`+`VERSION` fields if it's missing.
      */
     async fetchOsInfo() {
+        // No sudo: /etc/os-release is world-readable, and `. ` is a shell builtin that
+        // `sudo` can't invoke (it would exit non-zero). ssh runs this through the login shell.
         const response = await this.sshService.exec(
-            '. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-$NAME $VERSION}"'
+            '. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-$NAME $VERSION}"',
+            false
         )
         if (response.rc !== 0 && response.rc !== null) throw new Error(response.stderr || 'fetchOsInfo failed')
         const os = response.stdout.trim()

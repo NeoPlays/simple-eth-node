@@ -511,6 +511,26 @@ describe('Node', () => {
         })
     })
 
+    describe('fetchOsInfo', () => {
+        it('returns the trimmed PRETTY_NAME and reads /etc/os-release without sudo', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok('Ubuntu 22.04.3 LTS\n'))
+            const os = await node.fetchOsInfo()
+            expect(os).toBe('Ubuntu 22.04.3 LTS')
+            const [cmd, useSudo] = node.sshService.exec.mock.calls[0]
+            expect(cmd).toContain('/etc/os-release')
+            // sudo can't run the `.` builtin — must be called with useSudo=false.
+            expect(useSudo).toBe(false)
+        })
+        it('throws when os-release yields nothing', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok('   \n'))
+            await expect(node.fetchOsInfo()).rejects.toThrow(/OS info not found/)
+        })
+        it('throws on non-zero rc with stderr', async () => {
+            node.sshService.exec.mockResolvedValueOnce(fail('nope'))
+            await expect(node.fetchOsInfo()).rejects.toThrow('nope')
+        })
+    })
+
     describe('streamServiceLogs', () => {
         it('runs docker logs -f against the stereum-<uuid> container and forwards callbacks', async () => {
             const onLine = vi.fn(), onClose = vi.fn()
