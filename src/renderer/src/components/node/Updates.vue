@@ -60,7 +60,7 @@
                 <h2 class="section-title">Host</h2>
                 <div class="host-row">
                     <div class="host-info">
-                        <span class="host-label">Operating System</span>
+                        <span class="host-label">{{ osInfo || 'Operating System' }}</span>
                         <span v-if="osPackages" class="muted">
                             {{ osPackages.length ? `${osPackages.length} package${osPackages.length === 1 ? '' : 's'} upgradable` : 'up to date' }}
                         </span>
@@ -169,9 +169,11 @@
 import { useRouter, useRoute } from 'vue-router'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useNodesStore } from '@stores/useNodes'
+import { useTasksStore } from '@stores/useTasks'
 const router = useRouter()
 const route = useRoute()
 const store = useNodesStore()
+const tasks = useTasksStore()
 
 const nodeData = ref(null)
 const loading = ref(true)
@@ -179,6 +181,7 @@ const error = ref(false)
 const pending = reactive(new Set())
 
 const manifest = ref(null)
+const osInfo = ref(null)
 const osPackages = ref(null)
 const osPackagesError = ref(null)
 const osExpanded = ref(false)
@@ -265,6 +268,7 @@ async function load(force = false) {
 
 function refresh() {
     load(true)
+    loadOsInfo()
     loadOsPackages()
     loadControlsCommit()
 }
@@ -301,6 +305,14 @@ async function loadControlsCommit() {
     }
 }
 
+async function loadOsInfo() {
+    try {
+        osInfo.value = await window.api.invoke('get-os-info', route.params.id)
+    } catch (e) {
+        console.error('get-os-info failed:', e)
+    }
+}
+
 async function loadOsPackages() {
     osPackagesError.value = null
     try {
@@ -320,14 +332,23 @@ async function refreshAfterUpdate() {
     await Promise.all([loadOsPackages(), loadControlsCommit()])
 }
 
+// Fire a node op as a background task, wait for it to finish (observed via the task
+// registry), then refresh. Returns the terminal task so callers can flash by status.
+// Errors surface as task.status === 'failed' + task.error — they're not thrown.
+async function runTask(action, args, { onDone } = {}) {
+    const taskId = await tasks.runNodeTask(route.params.id, action, args)
+    const task = await tasks.awaitTask(taskId)
+    await refreshAfterUpdate()
+    onDone?.(task)
+    return task
+}
+
 async function updateService(serviceId) {
     pending.add(serviceId)
     try {
-        await window.api.invoke('update-services', route.params.id, [serviceId])
-        await refreshAfterUpdate()
-    } catch (e) {
-        console.error('update-services failed:', e)
-        flashHost('error', `Service update failed: ${e.message || e}`)
+        await runTask('update-services', [[serviceId]], {
+            onDone: (t) => { if (t?.status === 'failed') flashHost('error', `Service update failed: ${t.error || 'see Tasks'}`) },
+        })
     } finally {
         pending.delete(serviceId)
     }
@@ -338,11 +359,10 @@ async function updateAllServices() {
     if (!ids.length || !confirm(`Update ${ids.length} services to their latest images?`)) return
     hostBusy.value = 'services'
     try {
-        await window.api.invoke('update-services', route.params.id, ids)
-        flashHost('success', `Updated ${ids.length} services.`)
-        await refreshAfterUpdate()
-    } catch (e) {
-        flashHost('error', `Service update failed: ${e.message || e}`)
+        await runTask('update-services', [ids], {
+            onDone: (t) => flashHost(t?.status === 'failed' ? 'error' : 'success',
+                t?.status === 'failed' ? `Service update failed: ${t.error || 'see Tasks'}` : `Updated ${ids.length} services.`),
+        })
     } finally {
         hostBusy.value = null
     }
@@ -351,11 +371,10 @@ async function updateAllServices() {
 async function updatePackage(name) {
     pkgBusy.add(name)
     try {
-        await window.api.invoke('update-package', route.params.id, name)
-        flashHost('success', `Updated ${name}`)
-        await refreshAfterUpdate()
-    } catch (e) {
-        flashHost('error', `Package update failed: ${e.message || e}`)
+        await runTask('update-package', [name], {
+            onDone: (t) => flashHost(t?.status === 'failed' ? 'error' : 'success',
+                t?.status === 'failed' ? `Package update failed: ${t.error || 'see Tasks'}` : `Updated ${name}`),
+        })
     } finally {
         pkgBusy.delete(name)
     }
@@ -365,17 +384,10 @@ async function runFullUpdate() {
     if (!confirm('Update stereum controls and all services, then restart everything that changed? This can take a while.')) return
     hostBusy.value = 'all'
     try {
-        const { restarted } = await window.api.invoke('run-full-update', route.params.id)
-        const failed = (restarted ?? []).filter(r => !r.ok)
-        if (failed.length) {
-            flashHost('error', `Update finished, but ${failed.length} service${failed.length === 1 ? '' : 's'} failed to restart.`)
-        } else {
-            const n = restarted?.length ?? 0
-            flashHost('success', `Update complete — restarted ${n} service${n === 1 ? '' : 's'}.`)
-        }
-        await refreshAfterUpdate()
-    } catch (e) {
-        flashHost('error', `Update failed: ${e.message || e}`)
+        await runTask('run-full-update', [], {
+            onDone: (t) => flashHost(t?.status === 'failed' ? 'error' : 'success',
+                t?.status === 'failed' ? `Update failed: ${t.error || 'see Tasks'}` : 'Update complete — see Tasks for details.'),
+        })
     } finally {
         hostBusy.value = null
     }
@@ -391,11 +403,10 @@ async function runHostUpdate(kind) {
     if (!confirm(prompts[kind])) return
     hostBusy.value = kind
     try {
-        await window.api.invoke(kind === 'os' ? 'update-os' : 'update-stereum', route.params.id)
-        flashHost('success', `${kind === 'os' ? 'OS' : 'Node controls'} update completed.`)
-        await refreshAfterUpdate()
-    } catch (e) {
-        flashHost('error', `${kind} update failed: ${e.message || e}`)
+        await runTask(kind === 'os' ? 'update-os' : 'update-stereum', [], {
+            onDone: (t) => flashHost(t?.status === 'failed' ? 'error' : 'success',
+                t?.status === 'failed' ? `${kind} update failed: ${t.error || 'see Tasks'}` : `${kind === 'os' ? 'OS' : 'Node controls'} update completed.`),
+        })
     } finally {
         hostBusy.value = null
     }
@@ -405,6 +416,7 @@ onMounted(async () => {
     await load()
     if (nodeData.value) {
         loadManifest()
+        loadOsInfo()
         loadOsPackages()
         loadControlsCommit()
     }

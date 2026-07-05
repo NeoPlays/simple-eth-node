@@ -34,6 +34,7 @@ vi.mock('@main/ssh/SSHService', () => {
 vi.mock('electron-log', () => ({ default: { debug: vi.fn(), info: vi.fn(), error: vi.fn(), warn: vi.fn() } }))
 
 import { Node } from '@main/nodes/Node'
+import { taskContext } from '@main/tasks/TaskManager'
 
 const creds = { host: '1.2.3.4', port: 22, username: 'root', password: 'p', privateKey: '/fake/key', passphrase: '' }
 
@@ -316,9 +317,11 @@ describe('Node', () => {
         it('fetches settings if not loaded', async () => {
             node.sshService.exec
                 .mockResolvedValueOnce(ok('stereum_settings:\n  settings:\n    controls_install_path: /opt/stereum'))
-                .mockResolvedValueOnce(ok('done'))
+                .mockResolvedValueOnce(ok('done')) // playbook
+                .mockResolvedValueOnce(ok('')) // structured-log read
             await node.runPlaybook('update-services')
-            expect(node.sshService.exec).toHaveBeenCalledTimes(2)
+            // fetchSettings + playbook + log read
+            expect(node.sshService.exec).toHaveBeenCalledTimes(3)
         })
         it('builds an ansible-playbook command with extra-vars and the controls path', async () => {
             node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
@@ -354,6 +357,57 @@ describe('Node', () => {
             node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
             node.sshService.exec.mockResolvedValueOnce({ rc: 2, stdout: '', stderr: 'fail' })
             await expect(node.runPlaybook('manage-service')).rejects.toThrow('fail')
+        })
+        it('sets a per-run ANSIBLE_LOG_FOLDER and reads the structured log into response.log', async () => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.sshService.exec
+                .mockResolvedValueOnce(ok('PLAY RECAP (no structured blocks on stdout)')) // playbook
+                .mockResolvedValueOnce(ok('TASK: Start\nACTION: docker_container\nCATEGORY: OK')) // log read
+            const res = await node.runPlaybook('manage-service')
+
+            const cmd = node.sshService.exec.mock.calls[0][0]
+            const folder = cmd.match(/ANSIBLE_LOG_FOLDER=(\S+)/)[1]
+            expect(folder).toMatch(/^\/tmp\/stereum-lite-/)
+            // second exec reads the folder's files and removes it (under one sudo via sh -c)
+            const readCmd = node.sshService.exec.mock.calls[1][0]
+            expect(readCmd).toContain(`cat ${folder}/*`)
+            expect(readCmd).toContain(`rm -rf ${folder}`)
+            expect(res.log).toContain('CATEGORY: OK')
+        })
+        it('attaches the structured log to the error on failure', async () => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.sshService.exec
+                .mockResolvedValueOnce({ rc: 2, stdout: '', stderr: 'boom' }) // playbook
+                .mockResolvedValueOnce(ok('TASK: Bad\nACTION: x\nCATEGORY: FAILED')) // log read
+            let caught
+            try { await node.runPlaybook('manage-service') } catch (e) { caught = e }
+            expect(caught.message).toBe('boom')
+            expect(caught.log).toContain('CATEGORY: FAILED')
+        })
+        it('swallows a failed log read (response.log = "")', async () => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.sshService.exec
+                .mockResolvedValueOnce(ok('done')) // playbook
+                .mockRejectedValueOnce(new Error('cat failed')) // log read throws
+            const res = await node.runPlaybook('manage-service')
+            expect(res.log).toBe('')
+        })
+        it('reports parsed sub-tasks to the task-context reporter on completion', async () => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.sshService.exec
+                .mockResolvedValueOnce(ok('PLAY RECAP')) // playbook
+                .mockResolvedValueOnce(ok('TASK: Final\nACTION: a\nCATEGORY: OK')) // final log read
+            const reports = []
+            const reporter = { begin: () => 0, report: (seg, subs) => reports.push(subs) }
+            await taskContext.run(reporter, () => node.runPlaybook('manage-service'))
+            expect(reports.at(-1)).toEqual([expect.objectContaining({ name: 'Final', status: 'OK' })])
+        })
+        it('claims a reporter segment only when inside a task context', async () => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.sshService.exec.mockResolvedValue(ok('done'))
+            // No context: must not throw and must not poll (just playbook + final read).
+            await node.runPlaybook('manage-service')
+            expect(node.sshService.exec).toHaveBeenCalledTimes(2)
         })
     })
 

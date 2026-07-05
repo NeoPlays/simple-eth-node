@@ -1,6 +1,7 @@
 import { ipcMain, BrowserWindow, net } from "electron";
 import storage from "@main/store/StoreService"
 import nodeManager from "@main/nodes/NodeManager"
+import taskManager from "@main/tasks/TaskManager"
 import { Node } from "@main/nodes/Node";
 import log from 'electron-log'
 import _ from 'lodash'
@@ -10,6 +11,28 @@ const logSessions = new Map() // sessionId -> { handle, nodeId }
 
 function broadcast(channel, payload) {
     for (const w of BrowserWindow.getAllWindows()) w.webContents.send(channel, payload)
+}
+
+/** Friendly node label for a task, without any SSH calls. */
+function nodeLabel(node) {
+    return node?.name || node?.host || node?.id || 'node'
+}
+
+// Long-running node operations, dispatched async through the task manager via the single
+// `run-node-task` channel. Each entry maps an allowlisted action to a label and the Node
+// call; `args` is the positional arg array sent from the renderer. Adding a new tracked
+// op means one line here — no new IPC channel. (Read/fetch calls stay as their own
+// channels since the renderer needs their return value synchronously.)
+const NODE_TASK_ACTIONS = {
+    'start-service':            { label: () => 'Start service',          run: (node, [id]) => node.startService(id) },
+    'stop-service':             { label: () => 'Stop service',           run: (node, [id]) => node.stopService(id) },
+    'restart-service':          { label: () => 'Restart service',        run: (node, [id]) => node.restartService(id) },
+    'restart-changed-services': { label: () => 'Restart changed services', run: (node, [scope, prune = true]) => node.restartChangedServices(scope, { prune }) },
+    'update-os':                { label: () => 'Update OS',              run: (node) => node.updateOS() },
+    'update-package':           { label: ([name]) => `Update ${name}`,   run: (node, [name]) => node.updatePackage(name) },
+    'update-services':          { label: () => 'Update services',        run: (node, [ids = null]) => node.updateServices(ids) },
+    'update-stereum':           { label: () => 'Update node controls',   run: (node, [commit = null]) => node.updateStereum(commit) },
+    'run-full-update':          { label: () => 'Full update',            run: (node, [commit = null, prune = true]) => node.runFullUpdate(commit, { prune }) },
 }
 
 const UPDATES_MANIFEST_URL = 'https://stereum.com/downloads/updates.json'
@@ -46,8 +69,13 @@ function fetchUpdatesManifest() {
 }
 
 export function initializeIpcHandlers() {
+    // Broadcast every task create/transition to all windows so the docked panel stays live.
+    taskManager.onUpdate((task) => broadcast('task-updated', task))
+
     // IPC test
     ipcMain.handle('ping', () => log.debug('pong'));
+
+    ipcMain.handle('get-tasks', () => taskManager.list());
 
     // IPC StoreService
     ipcMain.handle('import-server-from-stereum', () => {return storage.importFromStereum()});
@@ -116,48 +144,17 @@ export function initializeIpcHandlers() {
         }
     });
 
-    ipcMain.handle('start-service', async (_, nodeId, serviceId) => {
-        try {
-            const node = nodeManager.findNode(nodeId)
-            if (!node) throw new Error('Node not found')
-            return await node.startService(serviceId)
-        } catch (error) {
-            log.error('start-service error:', error)
-            throw error
-        }
-    });
-
-    ipcMain.handle('stop-service', async (_, nodeId, serviceId) => {
-        try {
-            const node = nodeManager.findNode(nodeId)
-            if (!node) throw new Error('Node not found')
-            return await node.stopService(serviceId)
-        } catch (error) {
-            log.error('stop-service error:', error)
-            throw error
-        }
-    });
-
-    ipcMain.handle('restart-service', async (_, nodeId, serviceId) => {
-        try {
-            const node = nodeManager.findNode(nodeId)
-            if (!node) throw new Error('Node not found')
-            return await node.restartService(serviceId)
-        } catch (error) {
-            log.error('restart-service error:', error)
-            throw error
-        }
-    });
-
-    ipcMain.handle('restart-changed-services', async (_, nodeId, timeScopeSeconds, prune = true) => {
-        try {
-            const node = nodeManager.findNode(nodeId)
-            if (!node) throw new Error('Node not found')
-            return await node.restartChangedServices(timeScopeSeconds, { prune })
-        } catch (error) {
-            log.error('restart-changed-services error:', error)
-            throw error
-        }
+    // Single async entry point for all long-running node operations (see NODE_TASK_ACTIONS).
+    // Fires the op through the task manager and returns its task id immediately; the
+    // renderer observes progress/completion via the `task-updated` stream.
+    ipcMain.handle('run-node-task', (_, nodeId, action, args = []) => {
+        const node = nodeManager.findNode(nodeId)
+        if (!node) throw new Error('Node not found')
+        const spec = NODE_TASK_ACTIONS[action]
+        if (!spec) throw new Error(`Unknown task action: ${action}`)
+        const label = `${spec.label(args)} · ${nodeLabel(node)}`
+        const taskId = taskManager.run(label, () => spec.run(node, args), { nodeId })
+        return { taskId }
     });
 
     ipcMain.handle('fetch-updates-manifest', async () => {
@@ -204,6 +201,17 @@ export function initializeIpcHandlers() {
         }
     });
 
+    ipcMain.handle('get-os-info', async (_, nodeId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.fetchOsInfo()
+        } catch (error) {
+            log.error('get-os-info error:', error)
+            throw error
+        }
+    });
+
     ipcMain.handle('get-upgradable-packages', async (_, nodeId) => {
         try {
             const node = nodeManager.findNode(nodeId)
@@ -211,61 +219,6 @@ export function initializeIpcHandlers() {
             return await node.fetchUpgradablePackages()
         } catch (error) {
             log.error('get-upgradable-packages error:', error)
-            throw error
-        }
-    });
-
-    ipcMain.handle('update-os', async (_, nodeId) => {
-        try {
-            const node = nodeManager.findNode(nodeId)
-            if (!node) throw new Error('Node not found')
-            return await node.updateOS()
-        } catch (error) {
-            log.error('update-os error:', error)
-            throw error
-        }
-    });
-
-    ipcMain.handle('update-package', async (_, nodeId, name) => {
-        try {
-            const node = nodeManager.findNode(nodeId)
-            if (!node) throw new Error('Node not found')
-            return await node.updatePackage(name)
-        } catch (error) {
-            log.error('update-package error:', error)
-            throw error
-        }
-    });
-
-    ipcMain.handle('update-services', async (_, nodeId, serviceIds = null) => {
-        try {
-            const node = nodeManager.findNode(nodeId)
-            if (!node) throw new Error('Node not found')
-            return await node.updateServices(serviceIds)
-        } catch (error) {
-            log.error('update-services error:', error)
-            throw error
-        }
-    });
-
-    ipcMain.handle('update-stereum', async (_, nodeId, commit = null) => {
-        try {
-            const node = nodeManager.findNode(nodeId)
-            if (!node) throw new Error('Node not found')
-            return await node.updateStereum(commit)
-        } catch (error) {
-            log.error('update-stereum error:', error)
-            throw error
-        }
-    });
-
-    ipcMain.handle('run-full-update', async (_, nodeId, commit = null, prune = true) => {
-        try {
-            const node = nodeManager.findNode(nodeId)
-            if (!node) throw new Error('Node not found')
-            return await node.runFullUpdate(commit, { prune })
-        } catch (error) {
-            log.error('run-full-update error:', error)
             throw error
         }
     });

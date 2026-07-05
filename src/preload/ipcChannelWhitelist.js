@@ -1,3 +1,3 @@
-export const allowedChannels = ['ping', 'import-server-from-stereum', 'store-get', 'store-set', 'ssh-login', 'get-all-nodes', 'get-node', 'disconnect-node', 'reconnect-node', 'get-raw-service-config', 'write-service-config', 'start-service', 'stop-service', 'restart-service', 'restart-changed-services', 'get-container-statuses', 'update-os', 'update-package', 'update-services', 'update-stereum', 'run-full-update', 'fetch-updates-manifest', 'get-upgradable-packages', 'get-controls-commit', 'service-logs-start', 'service-logs-stop'];
+export const allowedChannels = ['ping', 'import-server-from-stereum', 'store-get', 'store-set', 'ssh-login', 'get-all-nodes', 'get-node', 'disconnect-node', 'reconnect-node', 'get-raw-service-config', 'write-service-config', 'run-node-task', 'get-container-statuses', 'fetch-updates-manifest', 'get-os-info', 'get-upgradable-packages', 'get-controls-commit', 'service-logs-start', 'service-logs-stop', 'get-tasks'];
 
-export const allowedEvents = ['node-status-changed', 'service-log-data', 'service-log-closed'];
+export const allowedEvents = ['node-status-changed', 'service-log-data', 'service-log-closed', 'task-updated'];

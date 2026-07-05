@@ -89,9 +89,11 @@
 import { useRouter, useRoute } from 'vue-router'
 import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
 import { useNodesStore } from '@stores/useNodes'
+import { useTasksStore } from '@stores/useTasks'
 const router = useRouter()
 const route = useRoute()
 const store = useNodesStore()
+const tasks = useTasksStore()
 
 const nodeData = ref(null)
 const loading = ref(true)
@@ -149,7 +151,8 @@ async function toggleService(service) {
     const serviceId = service.id
     pending.add(serviceId)
     try {
-        await window.api.invoke(isRunning(service) ? 'stop-service' : 'start-service', route.params.id, serviceId)
+        const taskId = await tasks.runNodeTask(route.params.id, isRunning(service) ? 'stop-service' : 'start-service', [serviceId])
+        await tasks.awaitTask(taskId)
         await refreshContainerStatuses()
     } finally {
         pending.delete(serviceId)
@@ -160,7 +163,8 @@ async function restartService(service) {
     const serviceId = service.id
     pending.add(serviceId)
     try {
-        await window.api.invoke('restart-service', route.params.id, serviceId)
+        const taskId = await tasks.runNodeTask(route.params.id, 'restart-service', [serviceId])
+        await tasks.awaitTask(taskId)
         await refreshContainerStatuses()
     } finally {
         pending.delete(serviceId)

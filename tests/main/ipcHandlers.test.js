@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 
-const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeWindow, fakeBrowserWindow, fakeNet, manifestState } = vi.hoisted(() => {
+const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeTaskManager, fakeWindow, fakeBrowserWindow, fakeNet, manifestState } = vi.hoisted(() => {
     const send = vi.fn()
     const fakeWindow = { webContents: { send } }
     // manifestState lets tests control the next fake HTTP response without re-mocking
@@ -52,11 +52,14 @@ const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeWindow, fakeBrowse
             fetchRawServiceConfig: vi.fn(),
             writeServiceConfig: vi.fn(),
             fetchControlsCommit: vi.fn(),
+            fetchOsInfo: vi.fn(),
             fetchUpgradablePackages: vi.fn(),
             updateOS: vi.fn(),
             updatePackage: vi.fn(),
             updateServices: vi.fn(),
             updateStereum: vi.fn(),
+            restartChangedServices: vi.fn(),
+            runFullUpdate: vi.fn(),
             streamServiceLogs: vi.fn(),
         },
         fakeNodeManager: {
@@ -66,6 +69,13 @@ const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeWindow, fakeBrowse
             findNode: vi.fn(),
             findNodeByEndpoint: vi.fn(),
             disconnectNode: vi.fn(),
+        },
+        // Fire-and-forget: run(label, fn) invokes fn (so the node method is called) and
+        // returns a task id synchronously.
+        fakeTaskManager: {
+            onUpdate: vi.fn(),
+            run: vi.fn((label, fn) => { fn(); return 'task-123' }),
+            list: vi.fn(() => [{ id: 't1', label: 'x', status: 'succeeded' }]),
         },
         fakeWindow,
         fakeBrowserWindow: { getAllWindows: vi.fn(() => [fakeWindow]) },
@@ -84,6 +94,7 @@ vi.mock('electron', () => ({
 vi.mock('@main/store/StoreService', () => ({ default: fakeStorage }))
 vi.mock('@main/nodes/Node', () => ({ Node: function FakeNodeCtor() { return fakeNode } }))
 vi.mock('@main/nodes/NodeManager', () => ({ default: fakeNodeManager }))
+vi.mock('@main/tasks/TaskManager', () => ({ default: fakeTaskManager }))
 
 vi.mock('electron-log', () => ({ default: { debug: vi.fn(), info: vi.fn(), error: vi.fn(), warn: vi.fn() } }))
 
@@ -106,25 +117,19 @@ describe('ipcHandlers', () => {
             'get-container-statuses',
             'get-controls-commit',
             'get-node',
+            'get-os-info',
             'get-raw-service-config',
+            'get-tasks',
             'get-upgradable-packages',
             'import-server-from-stereum',
             'ping',
             'reconnect-node',
-            'restart-changed-services',
-            'restart-service',
-            'run-full-update',
+            'run-node-task',
             'service-logs-start',
             'service-logs-stop',
             'ssh-login',
-            'start-service',
-            'stop-service',
             'store-get',
             'store-set',
-            'update-os',
-            'update-package',
-            'update-services',
-            'update-stereum',
             'write-service-config',
         ])
     })
@@ -224,31 +229,44 @@ describe('ipcHandlers', () => {
         await expect(handlers['disconnect-node'](event, 'a')).resolves.toBeUndefined()
     })
 
-    describe('service lifecycle handlers', () => {
+    describe('run-node-task (generic async dispatch)', () => {
+        // action -> [node method, args sent from renderer, expected method args]
         const cases = [
-            ['start-service', 'startService'],
-            ['stop-service', 'stopService'],
-            ['restart-service', 'restartService'],
+            ['start-service', 'startService', ['s'], ['s']],
+            ['stop-service', 'stopService', ['s'], ['s']],
+            ['restart-service', 'restartService', ['s'], ['s']],
+            ['restart-changed-services', 'restartChangedServices', [120, true], [120, { prune: true }]],
+            ['update-os', 'updateOS', [], []],
+            ['update-package', 'updatePackage', ['curl'], ['curl']],
+            ['update-services', 'updateServices', [['s1', 's2']], [['s1', 's2']]],
+            ['update-stereum', 'updateStereum', [null], [null]],
+            ['run-full-update', 'runFullUpdate', [null, true], [null, { prune: true }]],
         ]
-        for (const [channel, method] of cases) {
-            it(`${channel} routes to node.${method}`, async () => {
+        for (const [action, method, args, expected] of cases) {
+            it(`dispatches "${action}" to node.${method} through the task manager`, () => {
                 fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
-                fakeNode[method].mockResolvedValueOnce('done')
-                expect(await handlers[channel](event, 'n', 's')).toBe('done')
-                expect(fakeNode[method]).toHaveBeenCalledWith('s')
-            })
-
-            it(`${channel} throws when node is missing`, async () => {
-                fakeNodeManager.findNode.mockReturnValueOnce(null)
-                await expect(handlers[channel](event, 'n', 's')).rejects.toThrow('Node not found')
-            })
-
-            it(`${channel} re-throws errors from the node method`, async () => {
-                fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
-                fakeNode[method].mockRejectedValueOnce(new Error('fail'))
-                await expect(handlers[channel](event, 'n', 's')).rejects.toThrow('fail')
+                const r = handlers['run-node-task'](event, 'n', action, args)
+                expect(fakeTaskManager.run).toHaveBeenCalledWith(expect.any(String), expect.any(Function), { nodeId: 'n' })
+                expect(fakeNode[method]).toHaveBeenCalledWith(...expected)
+                expect(r).toEqual({ taskId: 'task-123' })
             })
         }
+
+        it('defaults updateServices to null when no ids are sent', () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            handlers['run-node-task'](event, 'n', 'update-services', [])
+            expect(fakeNode.updateServices).toHaveBeenCalledWith(null)
+        })
+
+        it('throws when the node is missing', () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(null)
+            expect(() => handlers['run-node-task'](event, 'n', 'update-os', [])).toThrow('Node not found')
+        })
+
+        it('throws on an unknown action', () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            expect(() => handlers['run-node-task'](event, 'n', 'rm-rf', [])).toThrow(/Unknown task action/)
+        })
     })
 
     it('get-container-statuses delegates / errors when missing', async () => {
@@ -278,48 +296,6 @@ describe('ipcHandlers', () => {
         await expect(handlers['write-service-config'](event, 'n', 's', 'c')).rejects.toThrow('Node not found')
     })
 
-    describe('update handlers', () => {
-        const cases = [
-            ['update-os', 'updateOS', []],
-            ['update-stereum', 'updateStereum', []],
-        ]
-        for (const [channel, method] of cases) {
-            it(`${channel} routes to node.${method}`, async () => {
-                fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
-                fakeNode[method].mockResolvedValueOnce('ok')
-                expect(await handlers[channel](event, 'n')).toBe('ok')
-                expect(fakeNode[method]).toHaveBeenCalledTimes(1)
-            })
-            it(`${channel} throws when node missing`, async () => {
-                fakeNodeManager.findNode.mockReturnValueOnce(null)
-                await expect(handlers[channel](event, 'n')).rejects.toThrow('Node not found')
-            })
-            it(`${channel} re-throws node errors`, async () => {
-                fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
-                fakeNode[method].mockRejectedValueOnce(new Error('boom'))
-                await expect(handlers[channel](event, 'n')).rejects.toThrow('boom')
-            })
-        }
-
-        it('update-package forwards the package name', async () => {
-            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
-            fakeNode.updatePackage.mockResolvedValueOnce('done')
-            expect(await handlers['update-package'](event, 'n', 'curl')).toBe('done')
-            expect(fakeNode.updatePackage).toHaveBeenCalledWith('curl')
-        })
-
-        it('update-services forwards an optional serviceIds array (null when omitted)', async () => {
-            fakeNodeManager.findNode.mockReturnValue(fakeNode)
-            fakeNode.updateServices.mockResolvedValue('done')
-
-            await handlers['update-services'](event, 'n')
-            expect(fakeNode.updateServices).toHaveBeenLastCalledWith(null)
-
-            await handlers['update-services'](event, 'n', ['s1', 's2'])
-            expect(fakeNode.updateServices).toHaveBeenLastCalledWith(['s1', 's2'])
-        })
-    })
-
     describe('get-controls-commit / get-upgradable-packages', () => {
         it('get-controls-commit delegates and propagates errors', async () => {
             fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
@@ -328,6 +304,15 @@ describe('ipcHandlers', () => {
 
             fakeNodeManager.findNode.mockReturnValueOnce(null)
             await expect(handlers['get-controls-commit'](event, 'n')).rejects.toThrow('Node not found')
+        })
+
+        it('get-os-info delegates and propagates errors', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.fetchOsInfo.mockResolvedValueOnce('Ubuntu 22.04.3 LTS')
+            expect(await handlers['get-os-info'](event, 'n')).toBe('Ubuntu 22.04.3 LTS')
+
+            fakeNodeManager.findNode.mockReturnValueOnce(null)
+            await expect(handlers['get-os-info'](event, 'n')).rejects.toThrow('Node not found')
         })
 
         it('get-upgradable-packages delegates and propagates errors', async () => {
@@ -465,6 +450,32 @@ describe('ipcHandlers', () => {
         it('rejects on malformed JSON', async () => {
             manifestState.body = 'not json'
             await expect(handlers['fetch-updates-manifest'](event)).rejects.toThrow(/parse failed/)
+        })
+    })
+
+    describe('task manager wiring', () => {
+        it('get-tasks returns the task list', async () => {
+            const r = await handlers['get-tasks'](event)
+            expect(fakeTaskManager.list).toHaveBeenCalled()
+            expect(r).toEqual([{ id: 't1', label: 'x', status: 'succeeded' }])
+        })
+
+        it('subscribes once and broadcasts task-updated to all windows', () => {
+            expect(fakeTaskManager.onUpdate).toHaveBeenCalledTimes(1)
+            const listener = fakeTaskManager.onUpdate.mock.calls[0][0]
+            listener({ id: 't9', status: 'running' })
+            expect(fakeWindow.webContents.send).toHaveBeenCalledWith('task-updated', { id: 't9', status: 'running' })
+        })
+
+        it('labels the task with the action and node, and returns its id immediately', () => {
+            fakeNodeManager.findNode.mockReturnValueOnce({ ...fakeNode, name: 'prod-1' })
+            const r = handlers['run-node-task'](event, 'n1', 'start-service', ['svc'])
+            expect(fakeTaskManager.run).toHaveBeenCalledWith(
+                expect.stringContaining('Start service · prod-1'),
+                expect.any(Function),
+                { nodeId: 'n1' },
+            )
+            expect(r).toEqual({ taskId: 'task-123' })
         })
     })
 })

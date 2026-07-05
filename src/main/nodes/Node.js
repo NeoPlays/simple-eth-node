@@ -1,7 +1,12 @@
 import { SSHService, SSHParams } from "@main/ssh/SSHService";
+import { taskContext, parseSubTasks } from "@main/tasks/TaskManager";
 import YAML from 'yaml';
 import { randomUUID } from "crypto";
 import log from 'electron-log';
+
+// How often a running playbook's log file is re-read to stream live sub-tasks to the
+// task panel (only when running inside a task context).
+const PLAYBOOK_POLL_MS = 2000;
 
 /**
  * Represents a remote node managed via SSH
@@ -224,6 +229,21 @@ export class Node {
         return commit
     }
 
+    /**
+     * The host's OS distro + version as a display string, e.g. "Ubuntu 22.04.3 LTS".
+     * Reads `PRETTY_NAME` from `/etc/os-release` (present on all systemd distros); falls
+     * back to `NAME`+`VERSION` fields if it's missing.
+     */
+    async fetchOsInfo() {
+        const response = await this.sshService.exec(
+            '. /etc/os-release 2>/dev/null && echo "${PRETTY_NAME:-$NAME $VERSION}"'
+        )
+        if (response.rc !== 0 && response.rc !== null) throw new Error(response.stderr || 'fetchOsInfo failed')
+        const os = response.stdout.trim()
+        if (!os) throw new Error('OS info not found (/etc/os-release missing?)')
+        return os
+    }
+
     async fetchUpgradablePackages() {
         const response = await this.sshService.exec("apt list --upgradable 2>/dev/null | tail -n +2")
         if (response.rc !== 0 && response.rc !== null) {
@@ -334,6 +354,27 @@ export class Node {
         return { elapsed, restarted }
     }
 
+    /**
+     * Human label for a playbook run, used as the sub-task group heading in the task
+     * panel. `manage-service` reflects the requested state + short service id so parallel
+     * restarts are distinguishable; the rest map role → friendly name.
+     */
+    _playbookLabel(role, stereumArgs = {}, topLevelVars = {}) {
+        if (role === 'manage-service') {
+            const svc = stereumArgs.manage_service || {}
+            const verb = { started: 'Start', stopped: 'Stop', restarted: 'Restart' }[svc.state] || 'Manage'
+            const id = svc.configuration?.id
+            return id ? `${verb} service · ${id.slice(0, 8)}` : `${verb} service`
+        }
+        if (role === 'update-package') return `Update package · ${stereumArgs.update_package?.name || ''}`.trim()
+        return {
+            'update-services': 'Update services',
+            'update-stereum': 'Update controls',
+            'update-changes': 'Apply config migrations',
+            'update-os': 'Update OS',
+        }[role] || role
+    }
+
     async runPlaybook(role, stereumArgs = {}, topLevelVars = {}) {
         if (!this.settings) await this.fetchSettings()
 
@@ -344,11 +385,69 @@ export class Node {
         if (Object.keys(stereumArgs).length) payload.stereum_args = stereumArgs
         const vars = JSON.stringify(payload)
         const escaped = vars.replace(/'/g, `'"'"'`)
-        const command = `ANSIBLE_LOAD_CALLBACK_PLUGINS=1 ANSIBLE_STDOUT_CALLBACK=stereumjson ANSIBLE_DEPRECATION_WARNINGS=false ansible-playbook --connection=local --inventory 127.0.0.1, --extra-vars '${escaped}' ${controlsPath}/ansible/controls/genericPlaybook.yaml`
+        // The stereumjson callback writes its structured per-task records (the
+        // TASK:/ACTION:/CATEGORY: blocks) to a per-host file under ANSIBLE_LOG_FOLDER,
+        // NOT to stdout. Give each run its own folder so we can read that log back.
+        const logFolder = `/tmp/stereum-lite-${randomUUID()}`
+        const command = `ANSIBLE_LOAD_CALLBACK_PLUGINS=1 ANSIBLE_STDOUT_CALLBACK=stereumjson ANSIBLE_DEPRECATION_WARNINGS=false ANSIBLE_LOG_FOLDER=${logFolder} ansible-playbook --connection=local --inventory 127.0.0.1, --extra-vars '${escaped}' ${controlsPath}/ansible/controls/genericPlaybook.yaml`
 
-        const response = await this.sshService.exec(command, true, { timeoutMs: SSHService.PLAYBOOK_TIMEOUT_MS })
-        if (response.rc !== null && response.rc !== 0) throw new Error(response.stderr || response.stdout || `Playbook '${role}' failed`)
+        // If we're inside a task, stream sub-tasks live by re-reading the log folder while
+        // the playbook runs. Each runPlaybook claims its own segment so composite ops
+        // (multiple playbooks) accumulate in order.
+        const reporter = taskContext.getStore()
+        const segment = reporter ? reporter.begin(this._playbookLabel(role, stereumArgs, topLevelVars)) : null
+        const stop = reporter ? this._pollPlaybookLog(logFolder, segment, reporter) : null
+
+        let response
+        try {
+            response = await this.sshService.exec(command, true, { timeoutMs: SSHService.PLAYBOOK_TIMEOUT_MS })
+        } finally {
+            stop?.()
+        }
+
+        // Final read of the structured log (best-effort) + cleanup. Done even on failure so
+        // the failed steps are captured. The folder is root-owned (ansible ran under sudo),
+        // so cat + rm run together under one sudo via `sh -c`.
+        response.log = await this._readPlaybookLog(logFolder, { cleanup: true })
+        if (reporter) reporter.report(segment, parseSubTasks(response.log))
+
+        if (response.rc !== null && response.rc !== 0) {
+            const err = new Error(response.stderr || response.stdout || `Playbook '${role}' failed`)
+            err.log = response.log
+            err.stdout = response.stdout
+            err.stderr = response.stderr
+            throw err
+        }
         return response
+    }
+
+    /**
+     * Poll a running playbook's log folder and stream parsed sub-tasks to the reporter's
+     * segment. Returns a stop() to cancel the loop (called once the exec resolves).
+     */
+    _pollPlaybookLog(logFolder, segment, reporter) {
+        let active = true
+        let timer = null
+        const tick = async () => {
+            if (!active) return
+            const logText = await this._readPlaybookLog(logFolder, { cleanup: false })
+            if (active && logText) reporter.report(segment, parseSubTasks(logText))
+            if (active) timer = setTimeout(tick, PLAYBOOK_POLL_MS)
+        }
+        timer = setTimeout(tick, PLAYBOOK_POLL_MS)
+        return () => { active = false; if (timer) clearTimeout(timer) }
+    }
+
+    /** Read the stereumjson per-host log file(s) from a run's ANSIBLE_LOG_FOLDER; optionally remove the folder. */
+    async _readPlaybookLog(logFolder, { cleanup = true } = {}) {
+        try {
+            const rm = cleanup ? `; rm -rf ${logFolder}` : ''
+            const res = await this.sshService.exec(`sh -c 'cat ${logFolder}/* 2>/dev/null${rm}'`, true)
+            return res.stdout || ''
+        } catch (e) {
+            log.warn('runPlaybook: could not read playbook log:', e?.message || e)
+            return ''
+        }
     }
 
     disconnect() {
