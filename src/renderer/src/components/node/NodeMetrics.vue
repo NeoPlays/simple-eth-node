@@ -79,46 +79,48 @@
         </div>
 
         <!-- Clients -->
-        <div v-if="clientRows.length" class="metrics-card">
+        <div v-if="clientServices.length" class="metrics-card">
             <div v-if="clientsError" class="metrics-empty error">Client metrics unavailable - {{ clientsError }}</div>
-            <div class="client-rows">
-                <div class="client-row" v-for="row in clientRows" :key="row.id">
-                    <div class="client-head">
-                        <span class="client-role" :class="row.metric.role">{{ row.metric.role === 'execution' ? 'EL' : 'CL' }}</span>
-                        <span class="client-name">{{ row.name }}</span>
-                        <span v-if="row.metric.source === 'prometheus'" class="src-mark" :title="sourceTitle(row.metric)">prom</span>
-                        <span class="client-sync" :class="syncClass(row.metric)">{{ syncLabel(row.metric) }}</span>
-                    </div>
-
-                    <div class="client-metrics">
-                        <div class="client-metric" v-if="row.metric.syncPct != null || row.metric.syncing">
-                            <span class="metric-tag">sync</span>
-                            <div class="bar">
-                                <div v-if="row.metric.syncPct != null" class="bar-fill" :class="syncBarLevel(row.metric)" :style="pctFill(row.metric.syncPct)"></div>
-                                <!-- syncing but no computable %: show an indeterminate sweep -->
-                                <div v-else class="bar-fill indeterminate" :class="syncBarLevel(row.metric)"></div>
-                            </div>
-                            <span class="metric-val mono">{{ headLabel(row.metric) || 'syncing…' }}</span>
+            <SetupGroups :services="clientServices">
+                <template #default="{ service }">
+                    <div class="client-row">
+                        <div class="client-head">
+                            <span class="client-name">{{ service.config?.service ?? service.id }}</span>
+                            <span v-if="service.metric.source === 'prometheus'" class="src-mark" :title="sourceTitle(service.metric)">prom</span>
+                            <span class="client-sync" :class="syncClass(service.metric)">{{ syncLabel(service.metric) }}</span>
                         </div>
 
-                        <div class="client-metric" v-if="row.metric.peers != null">
-                            <span class="metric-tag">peers</span>
-                            <div class="bar" v-if="row.metric.maxPeers">
-                                <div class="bar-fill" :class="peerLevel(row.metric)" :style="peerFill(row.metric)"></div>
+                        <div class="client-metrics">
+                            <div class="client-metric" v-if="service.metric.syncPct != null || service.metric.syncing">
+                                <span class="metric-tag">sync</span>
+                                <div class="bar">
+                                    <div v-if="service.metric.syncPct != null" class="bar-fill" :class="syncBarLevel(service.metric)" :style="pctFill(service.metric.syncPct)"></div>
+                                    <!-- syncing but no computable %: show an indeterminate sweep -->
+                                    <div v-else class="bar-fill indeterminate" :class="syncBarLevel(service.metric)"></div>
+                                </div>
+                                <span class="metric-val mono">{{ headLabel(service.metric) || 'syncing…' }}</span>
                             </div>
-                            <span class="metric-val mono">
-                                {{ row.metric.peers }}<template v-if="row.metric.maxPeers"> / {{ row.metric.maxPeers }}</template>
-                            </span>
+
+                            <div class="client-metric" v-if="service.metric.peers != null">
+                                <span class="metric-tag">peers</span>
+                                <div class="bar" v-if="service.metric.maxPeers">
+                                    <div class="bar-fill" :class="peerLevel(service.metric)" :style="peerFill(service.metric)"></div>
+                                </div>
+                                <span class="metric-val mono">
+                                    {{ service.metric.peers }}<template v-if="service.metric.maxPeers"> / {{ service.metric.maxPeers }}</template>
+                                </span>
+                            </div>
                         </div>
                     </div>
-                </div>
-            </div>
+                </template>
+            </SetupGroups>
         </div>
     </section>
 </template>
 
 <script setup>
 import { computed, ref } from 'vue'
+import SetupGroups from './SetupGroups.vue'
 
 const props = defineProps({
     system: { type: Object, default: null },
@@ -170,12 +172,12 @@ const diskSegments = computed(() => {
     return segs.map((s) => ({ ...s, width: `${(s.bytes / d.totalBytes) * 100}%` }))
 })
 
-// Join the client metric map to service names, ordered EL first then CL.
-const clientRows = computed(() =>
+// Services that have client metrics, each augmented with its `metric` so <SetupGroups>
+// can group them by setup + category (EC/CC) while the slot reads service.metric directly.
+const clientServices = computed(() =>
     props.services
         .filter((s) => props.clients[s.id])
-        .map((s) => ({ id: s.id, name: s.config?.service ?? s.id, metric: props.clients[s.id] }))
-        .sort((a, b) => (a.metric.role === b.metric.role ? 0 : a.metric.role === 'execution' ? -1 : 1))
+        .map((s) => ({ ...s, metric: props.clients[s.id] }))
 )
 
 // Threshold colouring for the usage bars.
@@ -405,12 +407,7 @@ function bytes(n) {
 .legend-label { color: var(--ev-c-text-1); }
 .legend-size { color: var(--ev-c-text-3); }
 
-/* Client rows */
-.client-rows {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-}
+/* Client rows (grouped by setup/category via <SetupGroups>) */
 .client-row {
     display: flex;
     flex-direction: column;
@@ -420,18 +417,6 @@ function bytes(n) {
     display: flex;
     align-items: center;
     gap: var(--space-3);
-}
-.client-role {
-    font-size: var(--font-size-micro);
-    font-weight: var(--font-weight-semibold);
-    padding: var(--chip-padding);
-    border-radius: var(--radius-sm);
-    background: var(--color-accent-soft);
-    color: var(--color-accent);
-}
-.client-role.consensus {
-    background: var(--color-warning-soft);
-    color: var(--color-warning);
 }
 .client-name {
     font-size: var(--font-size-secondary);

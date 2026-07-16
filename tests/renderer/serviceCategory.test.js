@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { serviceCategory, SERVICE_CATEGORY, CATEGORY_ORDER, CATEGORY_LABELS } from '@renderer/utils/serviceCategory'
+import { serviceCategory, groupServices, SERVICE_CATEGORY, CATEGORY_ORDER, CATEGORY_LABELS, CATEGORY_COLOR } from '@renderer/utils/serviceCategory'
 
 describe('serviceCategory', () => {
     it('categorizes execution / consensus / validator clients', () => {
@@ -31,12 +31,49 @@ describe('serviceCategory', () => {
         expect(serviceCategory(undefined)).toBe('other')
     })
 
-    it('every mapped category is a known ordered key with a label', () => {
+    it('every mapped category is a known ordered key with a label + color', () => {
         for (const cat of Object.values(SERVICE_CATEGORY)) {
             expect(CATEGORY_ORDER).toContain(cat)
         }
         for (const key of CATEGORY_ORDER) {
             expect(typeof CATEGORY_LABELS[key]).toBe('string')
+            expect(typeof CATEGORY_COLOR[key]).toBe('string')
         }
+    })
+})
+
+describe('groupServices', () => {
+    const svc = (id, service, setup) => ({ id, config: { service }, setup })
+    const eth = { id: 'setup-eth', name: 'ethSetup1', network: 'hoodi', type: 'ETH' }
+    const common = { id: 'setup-common', name: 'commonServices', network: 'default', type: 'common' }
+
+    it('groups by setup (common last), then by ordered category', () => {
+        const services = [
+            svc('c1', 'PrometheusService', common),
+            svc('v1', 'LighthouseValidatorService', eth),
+            svc('e1', 'GethService', eth),
+            svc('b1', 'LighthouseBeaconService', eth),
+        ]
+        const groups = groupServices(services)
+        expect(groups.map((g) => g.setup.id)).toEqual(['setup-eth', 'setup-common']) // common last
+        const ethGroup = groups[0]
+        // categories ordered EC -> CC -> VC, empties dropped
+        expect(ethGroup.categories.map((c) => c.key)).toEqual(['execution', 'consensus', 'validator'])
+        expect(ethGroup.categories[0].services.map((s) => s.id)).toEqual(['e1'])
+        expect(groups[1].categories.map((c) => c.key)).toEqual(['other'])
+    })
+
+    it('puts services with no setup in a trailing headerless group', () => {
+        const groups = groupServices([svc('x', 'GethService', null)])
+        expect(groups).toHaveLength(1)
+        expect(groups[0].setup).toBeNull()
+        expect(groups[0].categories[0].key).toBe('execution')
+    })
+
+    it('sorts real setups by name', () => {
+        const b = { id: 's-b', name: 'bravo', type: 'ETH' }
+        const a = { id: 's-a', name: 'alpha', type: 'ETH' }
+        const groups = groupServices([svc('1', 'GethService', b), svc('2', 'GethService', a)])
+        expect(groups.map((g) => g.setup.name)).toEqual(['alpha', 'bravo'])
     })
 })

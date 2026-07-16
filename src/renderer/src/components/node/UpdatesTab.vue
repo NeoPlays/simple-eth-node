@@ -87,32 +87,34 @@
                     </button>
                 </div>
                 <div v-if="!nodeData.services?.length" class="state-message">No services found.</div>
-                <div v-else class="service-list">
-                    <div class="host-row" v-for="service in nodeData.services" :key="service.id">
-                        <div class="host-info">
-                            <div class="service-title">
-                                <span class="host-label">{{ service.config?.service ?? service.id }}</span>
-                                <span class="service-network" v-if="service.config?.network">{{ service.config.network }}</span>
+                <SetupGroups v-else :services="nodeData.services">
+                    <template #default="{ service }">
+                        <div class="host-row update-row">
+                            <div class="host-info">
+                                <div class="service-title">
+                                    <span class="host-label">{{ service.config?.service ?? service.id }}</span>
+                                    <span class="service-network" v-if="!service.setup && service.config?.network">{{ service.config.network }}</span>
+                                </div>
+                                <span v-if="serviceUpdate(service).upgradable" class="version-diff">
+                                    {{ serviceUpdate(service).current }} <span class="arrow">→</span>
+                                    <span class="latest">{{ serviceUpdate(service).latest }}</span>
+                                </span>
+                                <span v-else-if="manifest" class="muted mono">{{ serviceUpdate(service).current ?? service.config?.image ?? '-' }} · up to date</span>
+                                <span v-else class="muted">checking…</span>
                             </div>
-                            <span v-if="serviceUpdate(service).upgradable" class="version-diff">
-                                {{ serviceUpdate(service).current }} <span class="arrow">→</span>
-                                <span class="latest">{{ serviceUpdate(service).latest }}</span>
-                            </span>
-                            <span v-else-if="manifest" class="muted mono">{{ serviceUpdate(service).current ?? service.config?.image ?? '-' }} · up to date</span>
-                            <span v-else class="muted">checking…</span>
+                            <div class="host-actions">
+                                <button
+                                    v-if="serviceUpdate(service).upgradable"
+                                    class="btn-edit btn-update"
+                                    @click="updateService(service.id)"
+                                    :disabled="pending.has(service.id) || !!hostBusy"
+                                >
+                                    {{ pending.has(service.id) ? '…' : 'Update' }}
+                                </button>
+                            </div>
                         </div>
-                        <div class="host-actions">
-                            <button
-                                v-if="serviceUpdate(service).upgradable"
-                                class="btn-edit btn-update"
-                                @click="updateService(service.id)"
-                                :disabled="pending.has(service.id) || !!hostBusy"
-                            >
-                                {{ pending.has(service.id) ? '…' : 'Update' }}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+                    </template>
+                </SetupGroups>
             </section>
     </div>
 </template>
@@ -121,6 +123,7 @@
 import { useRoute } from 'vue-router'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useTasksStore } from '@stores/useTasks'
+import SetupGroups from './SetupGroups.vue'
 const route = useRoute()
 const tasks = useTasksStore()
 
@@ -433,7 +436,8 @@ watch(() => props.nodeData, () => loadHostData())
     border-radius: var(--radius-xl);
     margin-bottom: var(--space-3);
 }
-.service-list .host-row { margin-bottom: 0; }
+/* Service rows sit inside <SetupGroups> (gap-spaced) - drop the Host-section margin. */
+.update-row { margin-bottom: 0; }
 .host-info {
     display: flex;
     flex-direction: column;

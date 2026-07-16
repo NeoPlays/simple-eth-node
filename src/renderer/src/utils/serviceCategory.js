@@ -30,6 +30,15 @@ export const SERVICE_CATEGORY = {
     // everything else (mev-boost, monitoring, ejector, keys-api, ssv dkg/nom, ipfs, ...) -> other
 }
 
+// Category hue (validated --chart palette). Single source shared by every tab's rails,
+// header dots and dependency chips.
+export const CATEGORY_COLOR = {
+    execution: 'var(--chart-1)', // blue
+    consensus: 'var(--chart-4)', // violet
+    validator: 'var(--chart-2)', // aqua
+    other: 'var(--ev-c-gray-2)',
+}
+
 /**
  * Category of a stereum service type.
  * @param {string} serviceType - e.g. "GethService" (a service config's `service` field)
@@ -37,4 +46,40 @@ export const SERVICE_CATEGORY = {
  */
 export function serviceCategory(serviceType) {
     return SERVICE_CATEGORY[serviceType] || 'other'
+}
+
+/** Split services into ordered client-type buckets (EC -> CC -> VC -> Other), empties dropped. */
+function categorize(services) {
+    const byCat = {}
+    for (const svc of services) (byCat[serviceCategory(svc.config?.service)] ||= []).push(svc)
+    return CATEGORY_ORDER
+        .filter((c) => byCat[c]?.length)
+        .map((c) => ({ key: c, label: CATEGORY_LABELS[c], services: byCat[c] }))
+}
+
+/**
+ * Group services by their setup (from multisetup.yaml), then by client-type category.
+ * Real setups first (by name), the node-wide `common` group last, and anything without a
+ * setup (older single-setup nodes) in a trailing headerless group. Each service must carry
+ * the DTO's `setup` annotation and `config.service`. Shared by the Services/Metrics/Updates
+ * tabs via <SetupGroups>.
+ * @returns {{ key:string, setup:object|null, categories:{ key, label, services }[] }[]}
+ */
+export function groupServices(services = []) {
+    const bySetup = new Map()
+    const ungrouped = []
+    for (const svc of services) {
+        const su = svc.setup
+        if (!su) { ungrouped.push(svc); continue }
+        if (!bySetup.has(su.id)) bySetup.set(su.id, { key: su.id, setup: su, services: [] })
+        bySetup.get(su.id).services.push(svc)
+    }
+    const arr = [...bySetup.values()].sort((a, b) => {
+        const ac = a.setup.type === 'common' ? 1 : 0
+        const bc = b.setup.type === 'common' ? 1 : 0
+        if (ac !== bc) return ac - bc // common last
+        return (a.setup.name || '').localeCompare(b.setup.name || '')
+    })
+    if (ungrouped.length) arr.push({ key: '__ungrouped', setup: null, services: ungrouped })
+    return arr.map((g) => ({ ...g, categories: categorize(g.services) }))
 }

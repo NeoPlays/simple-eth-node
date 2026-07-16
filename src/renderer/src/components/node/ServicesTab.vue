@@ -2,24 +2,9 @@
     <div class="services-tab">
         <div v-if="services?.length === 0" class="state-message">No services found.</div>
 
-        <section class="setup-group" v-for="group in groups" :key="group.key">
-            <div class="setup-head" v-if="group.setup">
-                <span class="setup-name">{{ group.setup.name }}</span>
-                <span v-if="group.setup.type === 'common'" class="setup-tag common">common</span>
-                <span v-else-if="group.setup.network" class="setup-tag network">{{ group.setup.network }}</span>
-            </div>
-            <div
-                class="category"
-                :class="{ railed: group.categories.length > 1 }"
-                :style="group.categories.length > 1 ? { '--cat-color': CATEGORY_COLOR[cat.key] } : null"
-                v-for="cat in group.categories"
-                :key="cat.key"
-            >
-                <div class="category-head" v-if="group.categories.length > 1">
-                    <span class="cat-dot"></span>{{ cat.label }}
-                </div>
-                <div class="service-list">
-                    <div class="service-card" :class="{ highlighted: highlightedId === service.id }" v-for="service in cat.services" :key="service.id">
+        <SetupGroups :services="services">
+            <template #default="{ service }">
+                    <div class="service-card" :class="{ highlighted: highlightedId === service.id }">
                         <div class="service-main">
                             <span class="service-name">{{ service.config?.service ?? service.id }}</span>
                             <span class="service-network" v-if="!service.setup && service.config?.network">{{ service.config.network }}</span>
@@ -72,30 +57,21 @@
                         </span>
                         <span class="service-id">{{ service.id }}</span>
                     </div>
-                </div>
-            </div>
-        </section>
+            </template>
+        </SetupGroups>
     </div>
 </template>
 
 <script setup>
 import { computed, ref } from 'vue'
-import { serviceCategory, CATEGORY_ORDER, CATEGORY_LABELS } from '@renderer/utils/serviceCategory'
+import { serviceCategory, CATEGORY_COLOR } from '@renderer/utils/serviceCategory'
+import SetupGroups from './SetupGroups.vue'
 
 const props = defineProps({
     services: { type: Array, default: () => [] },
     pending: { type: Object, default: () => new Set() }, // reactive Set of in-flight service ids
 })
 const emit = defineEmits(['toggle', 'restart', 'logs', 'edit'])
-
-// Category hue (validated --chart palette), single source for the rail, header dot and
-// dependency chips. Kept in the component (CSS token strings) rather than the util.
-const CATEGORY_COLOR = {
-    execution: 'var(--chart-1)', // blue
-    consensus: 'var(--chart-4)', // violet
-    validator: 'var(--chart-2)', // aqua
-    other: 'var(--ev-c-gray-2)',
-}
 
 // The service each id resolves to (for turning a dependency ref into a name + category).
 const serviceById = computed(() => Object.fromEntries(props.services.map((s) => [s.id, s])))
@@ -128,39 +104,6 @@ const depsByService = computed(() => Object.fromEntries(props.services.map((s) =
 // The service card currently highlighted by hovering a dependency chip that points to it.
 const highlightedId = ref(null)
 
-// Split a setup's services into ordered client-type buckets (EC -> CC -> VC -> Other),
-// dropping empty ones. Categorization is the shared, stereum-authoritative map.
-function categorize(services) {
-    const byCat = {}
-    for (const svc of services) (byCat[serviceCategory(svc.config?.service)] ||= []).push(svc)
-    return CATEGORY_ORDER
-        .filter((c) => byCat[c]?.length)
-        .map((c) => ({ key: c, label: CATEGORY_LABELS[c], services: byCat[c] }))
-}
-
-// Group services by their setup (from multisetup.yaml). Real setups first (by name),
-// the node-wide `common` group last, and anything without a setup (older single-setup
-// nodes) in a trailing headerless group so it renders as a flat list like before.
-// Each group is then split into client-type categories.
-const groups = computed(() => {
-    const bySetup = new Map()
-    const ungrouped = []
-    for (const svc of props.services) {
-        const su = svc.setup
-        if (!su) { ungrouped.push(svc); continue }
-        if (!bySetup.has(su.id)) bySetup.set(su.id, { key: su.id, setup: su, services: [] })
-        bySetup.get(su.id).services.push(svc)
-    }
-    const arr = [...bySetup.values()].sort((a, b) => {
-        const ac = a.setup.type === 'common' ? 1 : 0
-        const bc = b.setup.type === 'common' ? 1 : 0
-        if (ac !== bc) return ac - bc // common last
-        return (a.setup.name || '').localeCompare(b.setup.name || '')
-    })
-    if (ungrouped.length) arr.push({ key: '__ungrouped', setup: null, services: ungrouped })
-    return arr.map((g) => ({ ...g, categories: categorize(g.services) }))
-})
-
 function isRunning(service) {
     return service.container?.state === 'running' || service.container?.state === 'restarting'
 }
@@ -171,69 +114,6 @@ function isRunning(service) {
     display: flex;
     flex-direction: column;
     gap: var(--space-6);
-}
-.setup-group {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-}
-.setup-head {
-    display: flex;
-    align-items: baseline;
-    gap: var(--space-3);
-}
-.setup-name {
-    font-size: var(--font-size-title);
-    font-weight: var(--font-weight-semibold);
-    color: var(--ev-c-text-1);
-}
-.setup-tag {
-    font-size: var(--font-size-meta);
-    padding: var(--chip-padding);
-    border-radius: var(--radius-sm);
-    font-weight: var(--font-weight-medium);
-    text-transform: lowercase;
-}
-.setup-tag.network {
-    background-color: var(--color-accent-soft);
-    color: var(--color-accent);
-}
-.setup-tag.common {
-    background-color: var(--ev-c-gray-3);
-    color: var(--ev-c-text-3);
-}
-
-.setup-group > .category + .category {
-    margin-top: var(--space-5);
-}
-/* Colored left rail binds a category's cards together; the header dot + rail share the
-   category's hue (from the validated --chart palette). Only present when a setup has
-   more than one category (single-category groups render flat, no rail). */
-.category.railed {
-    border-left: 2px solid var(--cat-color);
-    padding-left: var(--space-4);
-}
-.category-head {
-    display: flex;
-    align-items: center;
-    gap: var(--space-2);
-    font-size: var(--font-size-secondary);
-    font-weight: var(--font-weight-semibold);
-    color: var(--ev-c-text-2);
-    margin-bottom: var(--space-3);
-}
-.cat-dot {
-    width: 8px;
-    height: 8px;
-    border-radius: 50%;
-    background: var(--cat-color);
-    flex-shrink: 0;
-}
-
-.service-list {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
 }
 
 .service-card {
