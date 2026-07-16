@@ -9,7 +9,7 @@ const MAX_TASKS = 100
 
 // Ambient progress channel: TaskManager.run() runs the op inside this context with a
 // reporter; `runPlaybook` (possibly several calls deep in a composite op) reads it via
-// getStore() and streams live sub-tasks — no callback threading through Node methods.
+// getStore() and streams live sub-tasks - no callback threading through Node methods.
 export const taskContext = new AsyncLocalStorage()
 
 /**
@@ -81,7 +81,7 @@ export class TaskManager {
 
     /**
      * Full DTO including per-playbook groups, the flattened sub-task list, and captured
-     * output. `groups` is `[{ label, status, subTasks }]` — one per playbook run so a
+     * output. `groups` is `[{ label, status, subTasks }]` - one per playbook run so a
      * composite op (e.g. a full update) shows each playbook's steps separately; `subTasks`
      * is the flattened view kept for status/count.
      */
@@ -104,11 +104,11 @@ export class TaskManager {
     }
 
     /**
-     * Run an operation as a tracked task — **fire-and-forget**. The task is created and
+     * Run an operation as a tracked task - **fire-and-forget**. The task is created and
      * `fn` started in the background; `run` returns the task id immediately. Callers
      * observe progress/completion via the `task-updated` stream (renderer) or by id, so
      * a long playbook no longer holds an IPC call open and survives renderer navigation.
-     * Errors are captured on the task (status `failed` + `error`), never thrown — there
+     * Errors are captured on the task (status `failed` + `error`), never thrown - there
      * is no caller awaiting them.
      *
      * On completion the op's ansible output is parsed into sub-tasks; a single ansible
@@ -128,7 +128,7 @@ export class TaskManager {
             createdAt: now,
             startedAt: now,
             endedAt: null,
-            groups: [], // [{ label, status, subTasks }] — one per playbook run
+            groups: [], // [{ label, status, subTasks }] - one per playbook run
             subTasks: [], // flattened view across groups (status + count)
             output: '',
             error: null,
@@ -170,7 +170,7 @@ export class TaskManager {
     /**
      * Build the ambient reporter for a task. Each playbook within the op claims a segment
      * (`begin(label)`) that becomes a group; `report(segment, subTasks)` replaces that
-     * group's steps. Groups stay in `begin()` order — so a composite op (multiple, even
+     * group's steps. Groups stay in `begin()` order - so a composite op (multiple, even
      * parallel, playbooks) shows each playbook's steps under its own heading, updating
      * live as ansible logs them.
      */
@@ -201,7 +201,7 @@ export class TaskManager {
      * Pull captured output + parsed sub-tasks out of an op result. Accepts a single
      * ansible response (`{ log, stdout, stderr, rc }`) or an array of them. The
      * structured `log` (the stereumjson per-task records written by `runPlaybook`) is
-     * what carries the parseable `TASK:/ACTION:/CATEGORY:` blocks — stdout does not — so
+     * what carries the parseable `TASK:/ACTION:/CATEGORY:` blocks - stdout does not - so
      * it's preferred for both sub-task parsing and output. Non-ansible results (e.g.
      * restart summaries) simply contribute no output.
      */

@@ -49,6 +49,9 @@ const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeTaskManager, fakeW
             stopService: vi.fn(),
             restartService: vi.fn(),
             fetchContainerStatuses: vi.fn(),
+            fetchSystemMetrics: vi.fn(),
+            fetchClientMetrics: vi.fn(),
+            fetchDiskBreakdown: vi.fn(),
             fetchRawServiceConfig: vi.fn(),
             writeServiceConfig: vi.fn(),
             fetchControlsCommit: vi.fn(),
@@ -114,11 +117,14 @@ describe('ipcHandlers', () => {
             'disconnect-node',
             'fetch-updates-manifest',
             'get-all-nodes',
+            'get-client-metrics',
             'get-container-statuses',
             'get-controls-commit',
+            'get-disk-usage',
             'get-node',
             'get-os-info',
             'get-raw-service-config',
+            'get-system-metrics',
             'get-tasks',
             'get-upgradable-packages',
             'import-server-from-stereum',
@@ -323,6 +329,34 @@ describe('ipcHandlers', () => {
             fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
             fakeNode.fetchUpgradablePackages.mockRejectedValueOnce(new Error('dpkg lock'))
             await expect(handlers['get-upgradable-packages'](event, 'n')).rejects.toThrow('dpkg lock')
+        })
+
+        it('get-system-metrics delegates and propagates errors', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.fetchSystemMetrics.mockResolvedValueOnce({ cpu: { usagePct: 12 } })
+            expect(await handlers['get-system-metrics'](event, 'n')).toEqual({ cpu: { usagePct: 12 } })
+
+            fakeNodeManager.findNode.mockReturnValueOnce(null)
+            await expect(handlers['get-system-metrics'](event, 'n')).rejects.toThrow('Node not found')
+        })
+
+        it('get-client-metrics delegates and propagates errors', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.fetchClientMetrics.mockResolvedValueOnce({ 'svc-1': { role: 'execution', peers: 40 } })
+            expect(await handlers['get-client-metrics'](event, 'n')).toEqual({ 'svc-1': { role: 'execution', peers: 40 } })
+
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.fetchClientMetrics.mockRejectedValueOnce(new Error('docker fail'))
+            await expect(handlers['get-client-metrics'](event, 'n')).rejects.toThrow('docker fail')
+        })
+
+        it('get-disk-usage delegates and propagates errors', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.fetchDiskBreakdown.mockResolvedValueOnce({ totalBytes: 1000, services: [] })
+            expect(await handlers['get-disk-usage'](event, 'n')).toEqual({ totalBytes: 1000, services: [] })
+
+            fakeNodeManager.findNode.mockReturnValueOnce(null)
+            await expect(handlers['get-disk-usage'](event, 'n')).rejects.toThrow('Node not found')
         })
     })
 

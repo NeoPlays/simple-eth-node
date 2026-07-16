@@ -79,7 +79,7 @@ async function login() {
         }
         router.push('/')
     } catch {
-        loginError.value = 'Unexpected error — check the logs'
+        loginError.value = 'Unexpected error - check the logs'
     } finally {
         connecting.value = false
     }

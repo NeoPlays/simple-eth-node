@@ -61,7 +61,7 @@ export function parseAnsi(line) {
             else if (FG[c]) style.fg = FG[c]
             else if (c === 38 && codes[i + 1] === 5) i += 2   // skip 256-color index
             else if (c === 38 && codes[i + 1] === 2) i += 4   // skip RGB triplet
-            // background colours (40–49, 100–107) intentionally ignored
+            // background colours (40-49, 100-107) intentionally ignored
         }
     }
     push(line.slice(last))

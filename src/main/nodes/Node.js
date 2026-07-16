@@ -1,5 +1,12 @@
 import { SSHService, SSHParams } from "@main/ssh/SSHService";
 import { taskContext, parseSubTasks } from "@main/tasks/TaskManager";
+import {
+    SYSTEM_METRICS_CMD, parseSystemMetrics,
+    buildClientProbeScript, parseClientMetrics,
+    buildDiskBreakdownCommand, parseDiskBreakdown,
+    CURL_IMAGE, STEREUM_DOCKER_NETWORK,
+    PROMETHEUS_SERVICE, PROMETHEUS_PORT,
+} from "@main/nodes/metrics";
 import YAML from 'yaml';
 import { randomUUID } from "crypto";
 import log from 'electron-log';
@@ -150,7 +157,7 @@ export class Node {
     /**
      * Find the service config files under /etc/stereum/services that were modified
      * within the last `timeScopeSeconds` seconds and return their service ids
-     * (the filename stem is the UUID — same convention as fetchServices).
+     * (the filename stem is the UUID - same convention as fetchServices).
      * Mirrors the selection logic of the upstream `restart-services` Ansible role.
      * @param {number} timeScopeSeconds
      * @returns {Promise<string[]>} ids of changed services
@@ -247,6 +254,63 @@ export class Node {
         return os
     }
 
+    /**
+     * Host system metrics (CPU / memory / disk) in a single SSH exec. Read-only,
+     * cheap - safe to poll while the node view is mounted. See `metrics.js`.
+     */
+    async fetchSystemMetrics() {
+        // Passed straight to the remote shell (like the other compound commands here) -
+        // do NOT wrap in `sh -c '…'`: the command already contains single quotes.
+        const response = await this.sshService.exec(SYSTEM_METRICS_CMD, false)
+        if (response.rc !== 0 && response.rc !== null) throw new Error(response.stderr || 'fetchSystemMetrics failed')
+        return parseSystemMetrics(response.stdout)
+    }
+
+    /**
+     * Per-client sync/peer health for every running execution/consensus client.
+     * Probes them all in one `docker run` curl sidecar joined to the stereum docker
+     * network (`STEREUM_DOCKER_NETWORK`), reaching each client by container name at
+     * its internal API port - no host port publishing required. Returns a map keyed
+     * by service id; a client that didn't answer carries an `error` instead of dropping.
+     * @returns {Promise<{ [serviceId:string]: object }>}
+     */
+    async fetchClientMetrics() {
+        // Service types are static for the node's lifetime - only (re)read configs when
+        // missing, not on every poll. Container state gates the probe, so that stays fresh.
+        if (!this.services?.length) await this.fetchServices()
+        if (this.services.some(s => !s.config)) await this.fetchServiceConfigs()
+        const containerStatuses = await this.fetchContainerStatuses()
+        const services = this.services.map(s => ({ ...s, container: containerStatuses[s.id] ?? null }))
+        // If Prometheus is running, prefer it for beacon sync (wall-clock target slot) -
+        // the sidecar queries it once; the beacon API stays the per-client fallback.
+        const prometheus = services.find(s => s.config?.service === PROMETHEUS_SERVICE && s.container?.state === 'running')
+        const promHost = prometheus ? `stereum-${prometheus.id}:${PROMETHEUS_PORT}` : null
+        const script = buildClientProbeScript(services, { promHost })
+        if (!script) return {}
+        const escaped = script.replace(/'/g, `'"'"'`)
+        const cmd = `docker run --rm --network ${STEREUM_DOCKER_NETWORK} --entrypoint sh ${CURL_IMAGE} -c '${escaped}'`
+        const response = await this.sshService.exec(cmd, true)
+        if (response.rc !== 0 && response.rc !== null) throw new Error(response.stderr || 'fetchClientMetrics failed')
+        return parseClientMetrics(response.stdout, services)
+    }
+
+    /**
+     * Per-service disk usage for a stacked disk bar. Sums `du` over each service's
+     * host volume paths and reports it against the filesystem holding the stereum data
+     * dir. Heavy (`du` walks the tree) - call on a slow cadence, not the health poll.
+     * Uses a generous idle timeout since a cold `du` on large chain data is slow.
+     */
+    async fetchDiskBreakdown() {
+        if (!this.settings) await this.fetchSettings()
+        if (!this.services?.length) await this.fetchServices()
+        if (this.services.some(s => !s.config)) await this.fetchServiceConfigs()
+        const dfTarget = this.settings?.stereum_settings?.settings?.controls_install_path || '/'
+        const cmd = buildDiskBreakdownCommand(this.services, dfTarget)
+        const response = await this.sshService.exec(cmd, true, { timeoutMs: 120_000 })
+        if (response.rc !== 0 && response.rc !== null) throw new Error(response.stderr || 'fetchDiskBreakdown failed')
+        return parseDiskBreakdown(response.stdout, this.services)
+    }
+
     async fetchUpgradablePackages() {
         const response = await this.sshService.exec("apt list --upgradable 2>/dev/null | tail -n +2")
         if (response.rc !== 0 && response.rc !== null) {
@@ -271,7 +335,7 @@ export class Node {
     /**
      * Run the `update-services` role without restarting. A single id is forwarded as a
      * bare string, multiple ids as an array (top-level `services_to_update`); no ids
-     * updates all services. Pure — the caller decides when to restart.
+     * updates all services. Pure - the caller decides when to restart.
      */
     async _runServicesUpdate(serviceIds = null) {
         const topLevel = serviceIds?.length
@@ -282,7 +346,7 @@ export class Node {
 
     /**
      * Update service images and restart every service whose config changed as a result,
-     * in parallel. Standalone entry point for the per-service / "update all" actions —
+     * in parallel. Standalone entry point for the per-service / "update all" actions -
      * without the restart the new image is pulled but the running container keeps the old one.
      * @param {string[]|null} serviceIds - ids to update; all services when null/empty
      * @param {{ prune?: boolean }} [opts]
@@ -298,7 +362,7 @@ export class Node {
     /**
      * Run the stereum control-update playbooks without restarting anything:
      * `update-stereum` (optionally pinned to a commit) followed by `update-changes`,
-     * which applies the config migrations the new controls ship. Pure — the caller
+     * which applies the config migrations the new controls ship. Pure - the caller
      * decides when to restart the affected services.
      * @param {string|null} commit - optional target commit (override_gitcommit); latest when null
      */
@@ -310,7 +374,7 @@ export class Node {
     /**
      * Update the stereum controls and restart every service whose config changed as a
      * result (e.g. by `update-changes`), in parallel. This is the standalone entry point
-     * the "Update Node Controls" action uses — without the restart, the config migrations
+     * the "Update Node Controls" action uses - without the restart, the config migrations
      * `update-changes` applies would not take effect until the next manual restart.
      * @param {string|null} commit - optional target stereum commit
      * @param {{ prune?: boolean }} [opts]
@@ -331,7 +395,7 @@ export class Node {
     /**
      * Run the full update sequence (stereum controls + service images) and return how
      * many seconds it took. Mirrors the launcher's NodeUpdates.runAllUpdates. No restart
-     * happens here — that's done once over the whole window by runFullUpdate, so the
+     * happens here - that's done once over the whole window by runFullUpdate, so the
      * pure `_runStereumUpdate` is used to avoid restarting mid-sequence.
      * @param {string|null} commit - optional target stereum commit
      * @returns {Promise<number>} elapsed seconds

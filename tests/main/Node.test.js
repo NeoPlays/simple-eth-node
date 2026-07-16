@@ -531,6 +531,93 @@ describe('Node', () => {
         })
     })
 
+    describe('fetchSystemMetrics', () => {
+        it('runs the metrics command WITHOUT a sh -c wrapper and without sudo', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok('#cores\n4\n'))
+            await node.fetchSystemMetrics()
+            const [cmd, useSudo] = node.sshService.exec.mock.calls[0]
+            // Regression: wrapping in `sh -c '…'` breaks — the command has literal single quotes.
+            expect(cmd.startsWith('sh -c')).toBe(false)
+            expect(cmd).toContain('/proc/stat')
+            expect(cmd).toContain('/proc/meminfo')
+            expect(useSudo).toBe(false)
+        })
+        it('parses into a metrics DTO', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok('#cores\n8\n#load\n1.5 1 1\n'))
+            const m = await node.fetchSystemMetrics()
+            expect(m.cpu.cores).toBe(8)
+            expect(m.cpu.load1).toBe(1.5)
+        })
+        it('throws on non-zero rc', async () => {
+            node.sshService.exec.mockResolvedValueOnce(fail('no /proc'))
+            await expect(node.fetchSystemMetrics()).rejects.toThrow('no /proc')
+        })
+    })
+
+    describe('fetchClientMetrics', () => {
+        const gethId = 'aaaaaaaa-0000-0000-0000-aaaaaaaaaaaa'
+        beforeEach(() => {
+            node.services = [{ id: gethId, config: { service: 'GethService' } }]
+        })
+        it('probes running clients via a docker curl sidecar on the stereum network (with sudo)', async () => {
+            node.sshService.exec
+                .mockResolvedValueOnce(ok(`{"Names":"stereum-${gethId}","State":"running","Status":"Up","Image":"geth"}`)) // fetchContainerStatuses
+                .mockResolvedValueOnce(ok(`===${gethId}===\n{"result":false}\n\n{"result":"0x2a"}\n`)) // docker run probe
+            const r = await node.fetchClientMetrics()
+            const [cmd, useSudo] = node.sshService.exec.mock.calls[1]
+            expect(cmd).toContain('docker run --rm --network stereum')
+            expect(cmd).toContain('curlimages/curl')
+            expect(useSudo).toBe(true)
+            expect(r[gethId]).toMatchObject({ role: 'execution', syncing: false, peers: 42 })
+        })
+        it('returns {} without a docker run when no client is running', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok(`{"Names":"stereum-${gethId}","State":"exited","Status":"Exited","Image":"geth"}`))
+            const r = await node.fetchClientMetrics()
+            expect(r).toEqual({})
+            expect(node.sshService.exec).toHaveBeenCalledTimes(1) // only the container-status read
+        })
+
+        it('queries Prometheus for beacon sync when a running PrometheusService is present', async () => {
+            const lhId = 'cccccccc-0000-0000-0000-cccccccccccc'
+            const promId = 'dddddddd-0000-0000-0000-dddddddddddd'
+            node.services = [
+                { id: lhId, config: { service: 'LighthouseBeaconService' } },
+                { id: promId, config: { service: 'PrometheusService' } },
+            ]
+            node.sshService.exec
+                .mockResolvedValueOnce(ok(`{"Names":"stereum-${lhId}","State":"running","Status":"Up","Image":"lh"}\n{"Names":"stereum-${promId}","State":"running","Status":"Up","Image":"prom"}`))
+                .mockResolvedValueOnce(ok(''))
+            await node.fetchClientMetrics()
+            const cmd = node.sshService.exec.mock.calls[1][0]
+            expect(cmd).toContain(`http://stereum-${promId}:9090/api/v1/query`)
+        })
+    })
+
+    describe('fetchDiskBreakdown', () => {
+        const gethId = 'aaaaaaaa-0000-0000-0000-aaaaaaaaaaaa'
+        beforeEach(() => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+            node.services = [{ id: gethId, config: { service: 'GethService', volumes: [`/opt/stereum/geth-${gethId}/data:/d`] } }]
+        })
+        it('runs du + df over the controls path with a long idle timeout (sudo)', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok(`600\t/opt/stereum/geth-${gethId}/data\n#df\n/opt/stereum 1000 800`))
+            const r = await node.fetchDiskBreakdown()
+            const [cmd, useSudo, opts] = node.sshService.exec.mock.calls[0]
+            expect(cmd).toContain('du -sb')
+            expect(cmd).toContain("df -B1 --output=target,size,used '/opt/stereum'")
+            expect(useSudo).toBe(true)
+            expect(opts.timeoutMs).toBeGreaterThanOrEqual(60_000)
+            expect(r.services[0]).toMatchObject({ id: gethId, bytes: 600 })
+            expect(r.totalBytes).toBe(1000)
+        })
+        it('falls back to / when no controls path is set', async () => {
+            node.settings = { stereum_settings: { settings: {} } }
+            node.sshService.exec.mockResolvedValueOnce(ok('#df\n/ 1000 400'))
+            await node.fetchDiskBreakdown()
+            expect(node.sshService.exec.mock.calls[0][0]).toContain("df -B1 --output=target,size,used '/'")
+        })
+    })
+
     describe('streamServiceLogs', () => {
         it('runs docker logs -f against the stereum-<uuid> container and forwards callbacks', async () => {
             const onLine = vi.fn(), onClose = vi.fn()

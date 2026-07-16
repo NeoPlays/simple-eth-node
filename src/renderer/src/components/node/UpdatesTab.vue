@@ -1,63 +1,16 @@
 <template>
-    <div class="updates-view">
-        <div v-if="loading" class="loading-scrim">
-            <span class="loading-spinner"></span>
-        </div>
-        <div class="top-bar">
-            <button class="btn-ghost" @click="router.back()">← Back</button>
-            <div class="top-bar-actions">
-                <button class="btn-ghost" @click="refresh" :disabled="loading || !!hostBusy">
-                    {{ loading ? 'Refreshing…' : '↻ Refresh' }}
-                </button>
-                <button class="btn-accent" @click="runFullUpdate" :disabled="loading || !!hostBusy">
-                    {{ hostBusy === 'all' ? 'Updating…' : 'Update everything' }}
-                </button>
-            </div>
+    <div class="updates-tab">
+        <div class="tab-actions">
+            <button class="btn-accent" @click="runFullUpdate" :disabled="!!hostBusy">
+                {{ hostBusy === 'all' ? 'Updating…' : 'Update everything' }}
+            </button>
+            <button class="btn-ghost" @click="copy(availableUpdatesText, 'updates')" :disabled="!availableUpdatesText">
+                {{ copied === 'updates' ? 'Copied' : 'Copy available updates' }}
+            </button>
         </div>
 
-        <div v-if="reconnecting" class="state-message">
-            <span class="loading-spinner inline"></span>
-            Reconnecting to {{ nodeHost }}…
-        </div>
-
-        <div v-else-if="disconnected" class="state-message error">
-            Connection to this node was lost. Return to the node list to reconnect or remove it.
-        </div>
-
-        <div v-else-if="error" class="state-message error">
-            Failed to load node. Check your SSH connection and try again.
-        </div>
-
-        <template v-else-if="nodeData">
-            <div class="node-header">
-                <h1 class="node-name">Updates</h1>
-                <div class="copy-rows">
-                    <div class="copy-row">
-                        <span class="copy-label">Hostname</span>
-                        <span class="copy-value mono">{{ nodeData.name }}</span>
-                        <button class="btn-copy" @click="copy(nodeData.name, 'hostname')">
-                            {{ copied === 'hostname' ? 'Copied' : 'Copy' }}
-                        </button>
-                    </div>
-                    <div class="copy-row">
-                        <span class="copy-label">IP address</span>
-                        <span class="copy-value mono">{{ nodeData.host }}</span>
-                        <button class="btn-copy" @click="copy(nodeData.host, 'ip')">
-                            {{ copied === 'ip' ? 'Copied' : 'Copy' }}
-                        </button>
-                    </div>
-                    <button
-                        class="btn-accent small copy-updates"
-                        @click="copy(availableUpdatesText, 'updates')"
-                        :disabled="!availableUpdatesText"
-                    >
-                        {{ copied === 'updates' ? 'Copied' : 'Copy available updates' }}
-                    </button>
-                </div>
-            </div>
-
-            <section class="section">
-                <h2 class="section-title">Host</h2>
+        <section class="section">
+            <h2 class="section-title">Host</h2>
                 <div class="host-row">
                     <div class="host-info">
                         <span class="host-label">{{ osInfo || 'Operating System' }}</span>
@@ -100,7 +53,7 @@
                             </template>
                             <template v-else>
                                 <span class="mono">{{ controlsInfo.commit }}</span>
-                                <span>— not in manifest</span>
+                                <span>- not in manifest</span>
                             </template>
                             <span v-if="controlsInfo.upgradable" class="version-diff inline">
                                 <span class="arrow">→</span>
@@ -145,7 +98,7 @@
                                 {{ serviceUpdate(service).current }} <span class="arrow">→</span>
                                 <span class="latest">{{ serviceUpdate(service).latest }}</span>
                             </span>
-                            <span v-else-if="manifest" class="muted mono">{{ serviceUpdate(service).current ?? service.config?.image ?? '—' }} · up to date</span>
+                            <span v-else-if="manifest" class="muted mono">{{ serviceUpdate(service).current ?? service.config?.image ?? '-' }} · up to date</span>
                             <span v-else class="muted">checking…</span>
                         </div>
                         <div class="host-actions">
@@ -161,23 +114,22 @@
                     </div>
                 </div>
             </section>
-        </template>
     </div>
 </template>
 
 <script setup>
-import { useRouter, useRoute } from 'vue-router'
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { useNodesStore } from '@stores/useNodes'
+import { useRoute } from 'vue-router'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useTasksStore } from '@stores/useTasks'
-const router = useRouter()
 const route = useRoute()
-const store = useNodesStore()
 const tasks = useTasksStore()
 
-const nodeData = ref(null)
-const loading = ref(true)
-const error = ref(false)
+// Node data + the loading/error/connection shell are owned by Node.vue; this is a tab.
+const props = defineProps({
+    nodeData: { type: Object, required: true },
+})
+const emit = defineEmits(['refresh']) // ask the parent to reload node data after an update
+
 const pending = reactive(new Set())
 
 const manifest = ref(null)
@@ -207,7 +159,7 @@ const controlsInfo = computed(() => {
 })
 
 const upgradableServices = computed(() =>
-    (nodeData.value?.services ?? []).filter(s => serviceUpdate(s).upgradable)
+    (props.nodeData?.services ?? []).filter(s => serviceUpdate(s).upgradable)
 )
 
 // Short, human-readable service name: drop the role/suffix noise from the type name
@@ -245,33 +197,6 @@ async function copy(text, key) {
     copiedTimer = setTimeout(() => { if (copied.value === key) copied.value = null }, 1500)
 }
 onUnmounted(() => clearTimeout(copiedTimer))
-
-const nodeStatus = computed(() => {
-    const n = store.nodes.find(n => n.id === route.params.id)
-    return n?.status
-})
-const disconnected = computed(() => nodeStatus.value === 'disconnected')
-const reconnecting = computed(() => nodeStatus.value === 'reconnecting')
-const nodeHost = computed(() => store.nodes.find(n => n.id === route.params.id)?.host)
-
-async function load(force = false) {
-    loading.value = true
-    error.value = false
-    const result = await (force ? store.refreshNode(route.params.id) : store.getNode(route.params.id))
-    if (!result) {
-        error.value = !store.isDisconnected(route.params.id)
-    } else {
-        nodeData.value = result
-    }
-    loading.value = false
-}
-
-function refresh() {
-    load(true)
-    loadOsInfo()
-    loadOsPackages()
-    loadControlsCommit()
-}
 
 function parseImageTag(image) {
     if (!image) return null
@@ -327,14 +252,15 @@ function flashHost(kind, text) {
     setTimeout(() => { if (hostMessage.value?.text === text) hostMessage.value = null }, 5000)
 }
 
-async function refreshAfterUpdate() {
-    await load(true)
-    await Promise.all([loadOsPackages(), loadControlsCommit()])
+// After an update, have the parent reload the node; the watch below re-fetches our
+// updates-specific data (packages / controls commit) when nodeData changes.
+function refreshAfterUpdate() {
+    emit('refresh')
 }
 
 // Fire a node op as a background task, wait for it to finish (observed via the task
 // registry), then refresh. Returns the terminal task so callers can flash by status.
-// Errors surface as task.status === 'failed' + task.error — they're not thrown.
+// Errors surface as task.status === 'failed' + task.error - they're not thrown.
 async function runTask(action, args, { onDone } = {}) {
     const taskId = await tasks.runNodeTask(route.params.id, action, args)
     const task = await tasks.awaitTask(taskId)
@@ -386,7 +312,7 @@ async function runFullUpdate() {
     try {
         await runTask('run-full-update', [], {
             onDone: (t) => flashHost(t?.status === 'failed' ? 'error' : 'success',
-                t?.status === 'failed' ? `Update failed: ${t.error || 'see Tasks'}` : 'Update complete — see Tasks for details.'),
+                t?.status === 'failed' ? `Update failed: ${t.error || 'see Tasks'}` : 'Update complete - see Tasks for details.'),
         })
     } finally {
         hostBusy.value = null
@@ -396,8 +322,8 @@ async function runFullUpdate() {
 async function runHostUpdate(kind) {
     const prompts = {
         os: osPackages.value?.length
-            ? `Update all ${osPackages.value.length} packages? May reboot the host and drop SSH — it will auto-reconnect.`
-            : 'Run apt upgrade on this host? May reboot and drop SSH — it will auto-reconnect.',
+            ? `Update all ${osPackages.value.length} packages? May reboot the host and drop SSH - it will auto-reconnect.`
+            : 'Run apt upgrade on this host? May reboot and drop SSH - it will auto-reconnect.',
         stereum: 'Update stereum controls on this host?',
     }
     if (!confirm(prompts[kind])) return
@@ -412,66 +338,29 @@ async function runHostUpdate(kind) {
     }
 }
 
-onMounted(async () => {
-    await load()
-    if (nodeData.value) {
-        loadManifest()
-        loadOsInfo()
-        loadOsPackages()
-        loadControlsCommit()
-    }
+function loadHostData() {
+    loadOsInfo()
+    loadOsPackages()
+    loadControlsCommit()
+}
+
+onMounted(() => {
+    loadManifest() // app-global, 5min cache - load once
+    loadHostData()
 })
+
+// When the parent reloads the node (its own Refresh or after one of our updates),
+// re-fetch the host/controls data so it reflects the new state.
+watch(() => props.nodeData, () => loadHostData())
 </script>
 
 <style scoped>
-.updates-view {
+.updates-tab {
     display: flex;
     flex-direction: column;
-    width: 100%;
-    height: 100%;
-    padding: var(--view-padding);
     gap: var(--space-7);
-    overflow-y: auto;
-    position: relative;
 }
-
-.loading-scrim {
-    position: fixed;
-    inset: 0;
-    background-color: rgba(0, 0, 0, 0.4);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 10;
-}
-
-.loading-spinner {
-    width: 24px;
-    height: 24px;
-    border: 3px solid rgba(148, 197, 204, 0.3);
-    border-top-color: var(--color-accent);
-    border-radius: 50%;
-    animation: spin 0.7s linear infinite;
-}
-.loading-spinner.inline {
-    width: 14px;
-    height: 14px;
-    border-width: 2px;
-    display: inline-block;
-    vertical-align: middle;
-    margin-right: var(--space-3);
-}
-
-@keyframes spin {
-    to { transform: rotate(360deg); }
-}
-
-.top-bar {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-}
-.top-bar-actions {
+.tab-actions {
     display: flex;
     gap: var(--space-3);
 }
@@ -511,56 +400,6 @@ onMounted(async () => {
     padding: var(--button-padding-small);
     font-size: var(--font-size-secondary);
     border-radius: var(--radius-md);
-}
-
-.node-header {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3);
-    padding: var(--header-card-padding);
-    background-color: var(--color-background-soft);
-    border-radius: var(--radius-2xl);
-}
-.node-name {
-    font-size: var(--font-size-page-title);
-    font-weight: var(--font-weight-bold);
-    color: var(--ev-c-text-1);
-}
-.copy-rows {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2);
-    align-items: flex-start;
-}
-.copy-row {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3);
-}
-.copy-label {
-    font-size: var(--font-size-meta);
-    color: var(--ev-c-text-3);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    min-width: 72px;
-}
-.copy-value {
-    font-size: var(--font-size-secondary);
-    color: var(--ev-c-text-2);
-}
-.btn-copy {
-    padding: 1px var(--space-2);
-    background-color: transparent;
-    color: var(--ev-c-text-3);
-    border: 1px solid var(--ev-c-gray-2);
-    border-radius: var(--radius-sm);
-    cursor: pointer;
-    font-size: var(--font-size-meta);
-    transition: background-color var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
-}
-.btn-copy:hover { background-color: var(--ev-c-gray-3); color: var(--ev-c-text-2); }
-.copy-updates {
-    margin-top: var(--space-2);
 }
 
 .section-head {

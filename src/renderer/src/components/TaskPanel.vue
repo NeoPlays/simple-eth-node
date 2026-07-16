@@ -46,7 +46,7 @@
                                     <ul v-if="groupOpen(task, gi)" class="subtasks">
                                         <li v-for="(sub, i) in group.subTasks" :key="i" class="subtask">
                                             <button class="subtask-head" @click="openDetail(sub)">
-                                                <span class="cat" :class="catClass(sub.status)">{{ sub.status || '—' }}</span>
+                                                <span class="cat" :class="catClass(sub.status)">{{ sub.status || '-' }}</span>
                                                 <span class="subtask-name">{{ sub.name }}</span>
                                                 <span class="expand-hint" aria-hidden="true">⤢</span>
                                             </button>
@@ -68,7 +68,7 @@
         <div v-if="detail" class="modal-overlay" @click.self="detail = null">
             <div class="modal">
                 <header class="modal-header">
-                    <span class="cat" :class="catClass(detail.status)">{{ detail.status || '—' }}</span>
+                    <span class="cat" :class="catClass(detail.status)">{{ detail.status || '-' }}</span>
                     <h3 class="modal-title">{{ detail.name }}</h3>
                     <button class="copy-btn" @click="copy('detail', detail.data)">
                         {{ copied === 'detail' ? 'Copied' : 'Copy' }}
@@ -242,7 +242,7 @@ function duration(task) {
 }
 
 .task-head {
-    /* Sticky so a long expanded sub-task list can be collapsed from any scroll position —
+    /* Sticky so a long expanded sub-task list can be collapsed from any scroll position -
        the header (and its toggle chevron) stays pinned to the top of the scroll area. */
     position: sticky;
     top: 0;
@@ -357,7 +357,7 @@ function duration(task) {
     flex-direction: column;
     gap: 2px;
     /* Cap the list so a long playbook (dozens of steps) scrolls inside its own box
-       instead of pushing the task/group headers — and the drawer's close — off screen. */
+       instead of pushing the task/group headers - and the drawer's close - off screen. */
     max-height: 320px;
     overflow-y: auto;
     background-color: var(--color-background-mute);
@@ -424,7 +424,7 @@ function duration(task) {
 }
 .copy-btn:hover { background-color: var(--ev-c-gray-3); }
 
-/* Sub-task detail modal — wide, tall, and readable, unlike the narrow drawer. */
+/* Sub-task detail modal - wide, tall, and readable, unlike the narrow drawer. */
 .modal-overlay {
     position: fixed;
     inset: 0;

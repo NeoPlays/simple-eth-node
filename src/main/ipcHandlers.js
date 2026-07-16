@@ -21,7 +21,7 @@ function nodeLabel(node) {
 // Long-running node operations, dispatched async through the task manager via the single
 // `run-node-task` channel. Each entry maps an allowlisted action to a label and the Node
 // call; `args` is the positional arg array sent from the renderer. Adding a new tracked
-// op means one line here — no new IPC channel. (Read/fetch calls stay as their own
+// op means one line here - no new IPC channel. (Read/fetch calls stay as their own
 // channels since the renderer needs their return value synchronously.)
 const NODE_TASK_ACTIONS = {
     'start-service':            { label: () => 'Start service',          run: (node, [id]) => node.startService(id) },
@@ -230,6 +230,39 @@ export function initializeIpcHandlers() {
             return await node.fetchContainerStatuses()
         } catch (error) {
             log.error('get-container-statuses error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('get-system-metrics', async (_, nodeId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.fetchSystemMetrics()
+        } catch (error) {
+            log.error('get-system-metrics error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('get-client-metrics', async (_, nodeId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.fetchClientMetrics()
+        } catch (error) {
+            log.error('get-client-metrics error:', error)
+            throw error
+        }
+    });
+
+    ipcMain.handle('get-disk-usage', async (_, nodeId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.fetchDiskBreakdown()
+        } catch (error) {
+            log.error('get-disk-usage error:', error)
             throw error
         }
     });

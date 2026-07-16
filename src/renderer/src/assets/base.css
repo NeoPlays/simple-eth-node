@@ -46,6 +46,18 @@
     --color-warning:      #e5c07b;
     --color-warning-soft: rgba(229, 192, 123, 0.10);
 
+    /* Categorical chart palette - for encoding distinct entities (e.g. per-service
+       disk segments). Fixed order, assigned by slot, never cycled. Validated for
+       colour-blind separation (worst adjacent ΔE ≥ 12) against the card surface in
+       both themes; the light steps live under [data-theme="light"] below. Identity
+       must never rely on colour alone - always pair with a labelled legend. */
+    --chart-1: #3987e5;
+    --chart-2: #199e70;
+    --chart-3: #c98500;
+    --chart-4: #9085e9;
+    --chart-5: #e66767;
+    --chart-6: #d95926;
+
     /* Type scale */
     --font-size-page-title: 22px;   /* h1 on a view (e.g. node name) */
     --font-size-title:      15px;   /* card titles (service-name, host-label) */
@@ -67,7 +79,7 @@
     --radius-xl:  10px;             /* cards */
     --radius-2xl: 12px;             /* large header cards */
 
-    /* Spacing — pick the closest, don't add new sizes */
+    /* Spacing - pick the closest, don't add new sizes */
     --space-1: 4px;
     --space-2: 6px;
     --space-3: 8px;
@@ -89,7 +101,7 @@
     /* Motion */
     --transition-fast: 150ms;
 
-    /* Font families — bundled via @fontsource (see src/renderer/src/main.js).
+    /* Font families - bundled via @fontsource (see src/renderer/src/main.js).
        System fallbacks are kept so the UI stays readable if a font file fails to load. */
     --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI',
                  Roboto, 'Helvetica Neue', Ubuntu, sans-serif;
@@ -97,7 +109,7 @@
                  Consolas, 'Cascadia Code', monospace;
 }
 
-/* Light theme — overrides the dark defaults when html[data-theme="light"] is set.
+/* Light theme - overrides the dark defaults when html[data-theme="light"] is set.
    Token NAMES stay the same so components don't need to know which theme is active. */
 :root[data-theme="light"] {
     --ev-c-gray-1: #b4b4bc;
@@ -114,7 +126,7 @@
 
     --color-text: var(--ev-c-text-1);
 
-    /* Semantic colors retuned for light backgrounds — preserve hue, only luminance shifts.
+    /* Semantic colors retuned for light backgrounds - preserve hue, only luminance shifts.
        Aim is "readable, not muddy": lighter than a pure dark recolor but still distinct from the dark-theme defaults. */
     --color-accent:       #5aa3ad;
     --color-accent-hover: #4a8c95;
@@ -126,6 +138,14 @@
     --color-danger-soft:  rgba(239, 115, 99, 0.14);
     --color-warning:      #e6b148;
     --color-warning-soft: rgba(230, 177, 72, 0.14);
+
+    /* Light-mode categorical steps - same hues stepped for the light surface. */
+    --chart-1: #2a78d6;
+    --chart-2: #1baf7a;
+    --chart-3: #eda100;
+    --chart-4: #4a3aa7;
+    --chart-5: #e34948;
+    --chart-6: #eb6834;
 }
 
 :root[data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8c8d0; }

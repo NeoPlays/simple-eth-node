@@ -8,7 +8,7 @@ body {
     user-select: none;
 }
 
-/* Utility — apply --font-mono to inline identifiers (commit hashes, versions, image tags). */
+/* Utility - apply --font-mono to inline identifiers (commit hashes, versions, image tags). */
 .mono {
     font-family: var(--font-mono);
 }

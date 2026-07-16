@@ -6,7 +6,6 @@
         <div class="top-bar">
             <button class="btn-ghost" @click="router.back()">← Back</button>
             <div class="top-bar-actions">
-                <button class="btn-ghost" @click="goToUpdates" :disabled="loading">Updates</button>
                 <button class="btn-accent" @click="refresh" :disabled="loading">
                     {{ loading ? 'Refreshing…' : '↻ Refresh' }}
                 </button>
@@ -29,71 +28,104 @@
 
         <template v-else-if="nodeData">
             <div class="node-header">
-                <h1 class="node-name">{{ nodeData.name }}</h1>
+                <h1 class="node-name copyable" @click="copy(nodeData.name, 'name')" title="Copy hostname">
+                    {{ nodeData.name }}
+                    <span class="copied-flag" v-if="copied === 'name'">Copied</span>
+                </h1>
                 <div class="node-meta">
-                    <span class="meta-tag">{{ nodeData.host }}:{{ nodeData.port }}</span>
+                    <button class="meta-tag copyable" @click="copy(nodeData.host, 'host')" title="Copy IP address">
+                        {{ nodeData.host }}:{{ nodeData.port }}
+                        <span class="copied-flag" v-if="copied === 'host'">Copied</span>
+                    </button>
                     <span class="meta-tag">{{ nodeData.username }}</span>
                 </div>
             </div>
 
-            <section class="section">
-                <h2 class="section-title">Services</h2>
-                <div v-if="nodeData.services?.length === 0" class="state-message">No services found.</div>
-                <div class="service-list">
-                    <div class="service-card" v-for="service in nodeData.services" :key="service.id">
-                        <div class="service-main">
-                            <span class="service-name">{{ service.config?.service ?? service.id }}</span>
-                            <span class="service-network" v-if="service.config?.network">{{ service.config.network }}</span>
-                            <span v-if="service.container" class="container-status" :class="service.container.state">
-                                <span class="status-dot"></span>{{ service.container.status }}
-                            </span>
-                            <span v-else class="container-status unknown">
-                                <span class="status-dot"></span>unknown
-                            </span>
-                        </div>
-                        <div class="service-actions">
-                            <button
-                                class="btn-service-action"
-                                :class="isRunning(service) ? 'btn-stop' : 'btn-start'"
-                                @click="toggleService(service)"
-                                :disabled="pending.has(service.id)"
-                            >
-                                {{ pending.has(service.id) ? '…' : isRunning(service) ? 'Stop' : 'Start' }}
-                            </button>
-                            <button
-                                v-if="isRunning(service)"
-                                class="btn-service-action btn-restart"
-                                @click="restartService(service)"
-                                :disabled="pending.has(service.id)"
-                            >
-                                {{ pending.has(service.id) ? '…' : 'Restart' }}
-                            </button>
-                            <button class="btn-edit" @click="viewLogs(service.id)" :disabled="pending.has(service.id)">Logs</button>
-                            <button class="btn-edit" @click="editService(service.id)" :disabled="pending.has(service.id)">Edit</button>
-                        </div>
-                        <span class="service-image">
-                            <span class="image-label">config</span>{{ service.config?.image ?? '—' }}
-                        </span>
-                        <span v-if="service.container?.image" class="service-image">
-                            <span class="image-label">running</span>{{ service.container.image }}
-                        </span>
-                        <span class="service-id">{{ service.id }}</span>
-                    </div>
-                </div>
-            </section>
+            <nav class="tab-bar">
+                <button
+                    v-for="tab in tabs"
+                    :key="tab.id"
+                    class="tab"
+                    :class="{ active: activeTab === tab.id }"
+                    :disabled="tab.disabled"
+                    @click="activeTab = tab.id"
+                >
+                    {{ tab.label }}
+                </button>
+            </nav>
+
+            <NodeMetrics
+                v-show="activeTab === 'metrics'"
+                :system="metricsSystem"
+                :clients="metricsClients"
+                :disk="metricsDisk"
+                :services="nodeData.services"
+                :system-error="metricsSystemError"
+                :clients-error="metricsClientsError"
+                :disk-error="metricsDiskError"
+            />
+
+            <ServicesTab
+                v-show="activeTab === 'services'"
+                :services="nodeData.services"
+                :pending="pending"
+                @toggle="toggleService"
+                @restart="restartService"
+                @logs="viewLogs"
+                @edit="editService"
+            />
+
+            <UpdatesTab v-show="activeTab === 'updates'" :node-data="nodeData" @refresh="() => load(true)" />
+
+            <ValidatorsTab v-show="activeTab === 'validators'" :services="nodeData.services" />
         </template>
     </div>
 </template>
 
 <script setup>
 import { useRouter, useRoute } from 'vue-router'
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useNodesStore } from '@stores/useNodes'
 import { useTasksStore } from '@stores/useTasks'
+import { useNodeMetrics } from '@renderer/composables/useNodeMetrics'
+import NodeMetrics from './NodeMetrics.vue'
+import ServicesTab from './ServicesTab.vue'
+import UpdatesTab from './UpdatesTab.vue'
+import ValidatorsTab from './ValidatorsTab.vue'
 const router = useRouter()
 const route = useRoute()
 const store = useNodesStore()
 const tasks = useTasksStore()
+
+const {
+    system: metricsSystem,
+    clients: metricsClients,
+    disk: metricsDisk,
+    systemError: metricsSystemError,
+    clientsError: metricsClientsError,
+    diskError: metricsDiskError,
+    start: startMetrics,
+    stop: stopMetrics,
+} = useNodeMetrics(() => route.params.id, {
+    // Only poll while the Metrics tab is open - the disk `du` + client probes are heavy.
+    shouldPoll: () => activeTab.value === 'metrics' && nodeData.value && !loading.value && !store.isDisconnected(route.params.id),
+})
+
+// Tabs on the node detail view. Validators is reserved for the upcoming key-management work.
+const tabs = [
+    { id: 'services', label: 'Services' },
+    { id: 'metrics', label: 'Metrics' },
+    { id: 'updates', label: 'Updates' },
+    { id: 'validators', label: 'Validators', disabled: true },
+]
+const activeTab = ref('services')
+
+// Metrics only fetch while their tab is visible: start (and re-fetch immediately) on
+// entering the tab, stop the pollers on leaving it.
+watch(activeTab, (tab) => {
+    if (tab === 'metrics') startMetrics()
+    else stopMetrics()
+})
 
 const nodeData = ref(null)
 const loading = ref(true)
@@ -122,10 +154,6 @@ async function load(force = false) {
 
 function refresh() {
     load(true)
-}
-
-function goToUpdates() {
-    router.push({ name: 'Updates', params: { id: route.params.id } })
 }
 
 function editService(serviceId) {
@@ -176,10 +204,36 @@ async function disconnect() {
     router.push('/')
 }
 
+// Copy hostname / IP from the header (restores what the old Updates page offered).
+const copied = ref(null)
+let copiedTimer = null
+async function copy(text, key) {
+    if (!text) return
+    try {
+        await navigator.clipboard.writeText(text)
+    } catch {
+        // fallback for contexts where the async clipboard API is unavailable
+        const ta = document.createElement('textarea')
+        ta.value = text
+        ta.style.position = 'fixed'
+        ta.style.opacity = '0'
+        document.body.appendChild(ta)
+        ta.select()
+        try { document.execCommand('copy') } catch { /* ignore */ }
+        document.body.removeChild(ta)
+    }
+    copied.value = key
+    clearTimeout(copiedTimer)
+    copiedTimer = setTimeout(() => { if (copied.value === key) copied.value = null }, 1500)
+}
+
 let statusInterval = null
 
 onMounted(async () => {
     await load()
+    // If Metrics is the active tab on mount, kick off its pollers (the watch above only
+    // fires on change, not initial value).
+    if (activeTab.value === 'metrics') startMetrics()
     statusInterval = setInterval(async () => {
         if (nodeData.value && !loading.value && !store.isDisconnected(route.params.id)) {
             await refreshContainerStatuses()
@@ -187,7 +241,11 @@ onMounted(async () => {
     }, 10_000)
 })
 
-onUnmounted(() => clearInterval(statusInterval))
+onUnmounted(() => {
+    clearInterval(statusInterval)
+    stopMetrics()
+    clearTimeout(copiedTimer)
+})
 </script>
 
 <style scoped>
@@ -200,6 +258,36 @@ onUnmounted(() => clearInterval(statusInterval))
     gap: 24px;
     overflow-y: auto;
     position: relative;
+}
+
+.tab-bar {
+    display: flex;
+    gap: var(--space-1);
+    border-bottom: 1px solid var(--ev-c-gray-2);
+    margin-top: calc(-1 * var(--space-2));
+}
+.tab {
+    padding: var(--space-3) var(--space-4);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    margin-bottom: -1px;
+    color: var(--ev-c-text-2);
+    font-size: var(--font-size-button);
+    font-weight: var(--font-weight-medium);
+    cursor: pointer;
+    transition: color var(--transition-fast), border-color var(--transition-fast);
+}
+.tab:hover:not(:disabled) {
+    color: var(--ev-c-text-1);
+}
+.tab.active {
+    color: var(--color-accent);
+    border-bottom-color: var(--color-accent);
+}
+.tab:disabled {
+    color: var(--ev-c-text-3);
+    cursor: not-allowed;
 }
 
 .loading-scrim {
@@ -303,6 +391,7 @@ onUnmounted(() => clearInterval(statusInterval))
 
 .node-meta {
     display: flex;
+    align-items: center;
     gap: 8px;
 }
 
@@ -315,162 +404,31 @@ onUnmounted(() => clearInterval(statusInterval))
     font-family: var(--font-mono);
 }
 
-.section-title {
-    font-size: 13px;
-    font-weight: 600;
-    color: var(--ev-c-text-2);
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    margin-bottom: 10px;
-}
-
-.service-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-}
-
-.service-card {
-    display: grid;
-    grid-template-columns: 1fr auto;
-    grid-template-rows: auto auto;
-    align-items: center;
-    padding: 14px 18px;
-    background-color: var(--color-background-soft);
-    border-radius: 10px;
-    gap: 4px 8px;
-}
-
-.service-main {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    grid-column: 1;
-    grid-row: 1;
-}
-
-.service-name {
-    font-size: 15px;
-    font-weight: 600;
-    color: var(--ev-c-text-1);
-}
-
-.service-network {
-    font-size: 11px;
-    padding: 2px 7px;
-    border-radius: 4px;
-    background-color: var(--color-accent-soft);
-    color: var(--color-accent);
-    font-weight: 500;
-}
-
-.service-actions {
-    grid-column: 2;
-    grid-row: 1;
-    display: flex;
-    gap: 6px;
-    align-items: center;
-}
-
-.btn-service-action {
-    padding: 4px 10px;
-    border-radius: 6px;
+/* Click-to-copy affordances (hostname on the title, IP on the host chip). */
+.copyable {
     cursor: pointer;
-    font-size: 12px;
-    font-weight: 500;
-    border: 1px solid;
-    transition: background-color 150ms, opacity 150ms;
-    white-space: nowrap;
-    min-width: 44px;
+    border: none;
+    transition: color var(--transition-fast), background-color var(--transition-fast);
 }
-.btn-service-action:disabled { opacity: 0.4; cursor: default; }
-
-.btn-start {
-    background-color: transparent;
-    color: var(--color-success);
-    border-color: var(--color-success);
+h1.node-name.copyable {
+    background: none;
+    padding: 0;
+    align-self: flex-start;
 }
-.btn-start:hover:not(:disabled) { background-color: var(--color-success-soft); }
-
-.btn-stop {
-    background-color: transparent;
-    color: var(--color-danger);
-    border-color: var(--color-danger);
-}
-.btn-stop:hover:not(:disabled) { background-color: var(--color-danger-soft); }
-
-.btn-restart {
-    background-color: transparent;
-    color: var(--color-warning);
-    border-color: var(--color-warning);
-}
-.btn-restart:hover:not(:disabled) { background-color: var(--color-warning-soft); }
-
-.btn-edit {
-    padding: 4px 10px;
-    background-color: transparent;
-    color: var(--ev-c-text-2);
-    border: 1px solid var(--ev-c-gray-2);
-    border-radius: 6px;
-    cursor: pointer;
-    font-size: 12px;
-    transition: background-color 150ms, border-color 150ms;
-    white-space: nowrap;
-}
-.btn-edit:hover:not(:disabled) { background-color: var(--ev-c-gray-3); border-color: var(--ev-c-gray-1); }
-.btn-edit:disabled { opacity: 0.4; cursor: default; }
-
-.container-status {
-    display: flex;
-    align-items: center;
-    gap: 5px;
-    font-size: 12px;
-    color: var(--ev-c-text-2);
-}
-.status-dot {
-    width: 7px;
-    height: 7px;
-    border-radius: 50%;
-    flex-shrink: 0;
-    background-color: var(--ev-c-gray-1);
-}
-.container-status.running .status-dot { background-color: var(--color-success); }
-.container-status.exited .status-dot,
-.container-status.dead .status-dot  { background-color: var(--color-danger); }
-.container-status.paused .status-dot,
-.container-status.restarting .status-dot { background-color: var(--color-warning); }
-
-.service-image {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    font-size: 12px;
-    color: var(--ev-c-text-2);
+.node-name.copyable:hover { color: var(--color-accent); }
+button.meta-tag.copyable {
     font-family: var(--font-mono);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    grid-column: 1;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
 }
-
-.image-label {
+button.meta-tag.copyable:hover { background-color: var(--ev-c-gray-2); color: var(--ev-c-text-2); }
+.copied-flag {
     font-family: var(--font-sans);
-    font-size: 10px;
-    color: var(--ev-c-text-3);
-    background-color: var(--ev-c-gray-3);
-    padding: 1px 5px;
-    border-radius: 3px;
-    flex-shrink: 0;
-}
-
-.service-id {
-    font-size: 11px;
-    color: var(--ev-c-text-3);
-    font-family: var(--font-mono);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    grid-column: 1 / -1;
+    font-size: var(--font-size-meta);
+    font-weight: var(--font-weight-medium);
+    color: var(--color-success);
+    margin-left: var(--space-2);
 }
 
 .state-message {
