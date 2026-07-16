@@ -122,7 +122,7 @@ describe('TaskManager', () => {
         })
         await settled(id)
 
-        // segment a (in order) then segment b — regardless of report interleaving
+        // segment a (in order) then segment b - regardless of report interleaving
         expect(tm.get(id).subTasks.map((s) => s.name)).toEqual(['p1-t1', 'p1-t2', 'p2-t1'])
         // live: panel saw intermediate states, not just the final one
         expect(snapshots).toContainEqual(['p1-t1'])

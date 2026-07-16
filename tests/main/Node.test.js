@@ -253,6 +253,52 @@ describe('Node', () => {
         })
     })
 
+    describe('fetchSetups', () => {
+        beforeEach(() => {
+            node.settings = { stereum_settings: { settings: { controls_install_path: '/opt/stereum' } } }
+        })
+        it('parses multisetup.yaml into an array of setups', async () => {
+            const yaml = [
+                'setup-eth:',
+                '  name: ethSetup1',
+                '  network: hoodi',
+                '  color: default',
+                '  type: ETH',
+                '  services:',
+                '    - svc-a',
+                '    - svc-b',
+                'setup-common:',
+                '  name: commonServices',
+                '  network: default',
+                '  type: common',
+                '  services:',
+                '    - svc-c',
+            ].join('\n')
+            node.sshService.exec.mockResolvedValueOnce(ok(yaml))
+            const setups = await node.fetchSetups()
+            expect(node.sshService.exec.mock.calls[0][0]).toContain('/etc/stereum/multisetup.yaml')
+            expect(setups).toHaveLength(2)
+            expect(setups[0]).toMatchObject({ id: 'setup-eth', name: 'ethSetup1', network: 'hoodi', type: 'ETH', services: ['svc-a', 'svc-b'] })
+            expect(setups[1]).toMatchObject({ id: 'setup-common', type: 'common', services: ['svc-c'] })
+        })
+        it('returns [] when multisetup.yaml is absent (cat rc 1)', async () => {
+            node.sshService.exec.mockResolvedValueOnce(fail('No such file'))
+            expect(await node.fetchSetups()).toEqual([])
+        })
+        it('returns [] on empty output', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok('   '))
+            expect(await node.fetchSetups()).toEqual([])
+        })
+        it('caches; refresh=true re-reads', async () => {
+            node.sshService.exec.mockResolvedValue(ok('x:\n  name: s\n  services: []'))
+            await node.fetchSetups()
+            await node.fetchSetups()
+            expect(node.sshService.exec).toHaveBeenCalledTimes(1)
+            await node.fetchSetups(true)
+            expect(node.sshService.exec).toHaveBeenCalledTimes(2)
+        })
+    })
+
     describe('toDTO', () => {
         it('returns full DTO including container state merged into services', async () => {
             node.sshService.SSHParams.name = 'host1'
@@ -283,6 +329,20 @@ describe('Node', () => {
             })
             const dto = await node.toDTO()
             expect(dto.services[0].container).toBeNull()
+        })
+        it('annotates each service with its setup and includes setups[]', async () => {
+            const svcId = 'aaaaaaaa-0000-0000-0000-aaaaaaaaaaaa'
+            node.sshService.exec.mockImplementation((cmd) => {
+                if (cmd.includes('multisetup.yaml')) return Promise.resolve(ok(`s1:\n  name: ethSetup1\n  network: hoodi\n  type: ETH\n  services:\n    - ${svcId}`))
+                if (cmd.includes('stereum.yaml')) return Promise.resolve(ok('stereum_settings:\n  settings:\n    controls_install_path: /opt/stereum'))
+                if (cmd.startsWith('ls /etc/stereum/services')) return Promise.resolve(ok(`${svcId}.yaml`))
+                if (cmd.includes(`${svcId}.yaml`)) return Promise.resolve(ok(`id: ${svcId}\nservice: GethService`))
+                if (cmd.startsWith('docker ps')) return Promise.resolve(ok(''))
+                return Promise.resolve(fail('unexpected: ' + cmd))
+            })
+            const dto = await node.toDTO()
+            expect(dto.setups).toHaveLength(1)
+            expect(dto.services[0].setup).toMatchObject({ id: 's1', name: 'ethSetup1', network: 'hoodi', type: 'ETH' })
         })
     })
 
@@ -518,7 +578,7 @@ describe('Node', () => {
             expect(os).toBe('Ubuntu 22.04.3 LTS')
             const [cmd, useSudo] = node.sshService.exec.mock.calls[0]
             expect(cmd).toContain('/etc/os-release')
-            // sudo can't run the `.` builtin — must be called with useSudo=false.
+            // sudo can't run the `.` builtin - must be called with useSudo=false.
             expect(useSudo).toBe(false)
         })
         it('throws when os-release yields nothing', async () => {
@@ -536,7 +596,7 @@ describe('Node', () => {
             node.sshService.exec.mockResolvedValueOnce(ok('#cores\n4\n'))
             await node.fetchSystemMetrics()
             const [cmd, useSudo] = node.sshService.exec.mock.calls[0]
-            // Regression: wrapping in `sh -c '…'` breaks — the command has literal single quotes.
+            // Regression: wrapping in `sh -c '…'` breaks - the command has literal single quotes.
             expect(cmd.startsWith('sh -c')).toBe(false)
             expect(cmd).toContain('/proc/stat')
             expect(cmd).toContain('/proc/meminfo')

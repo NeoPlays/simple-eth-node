@@ -286,7 +286,7 @@ describe('serviceVolumePaths', () => {
         expect(serviceVolumePaths(undefined)).toEqual([])
     })
     it('drops read-only host-inspection mounts (PrometheusNodeExporter / MetricsExporter)', () => {
-        // PrometheusNodeExporter: `/` mounted ro,rslave — must never be du-ed.
+        // PrometheusNodeExporter: `/` mounted ro,rslave - must never be du-ed.
         expect(serviceVolumePaths({ volumes: ['/:/host:ro,rslave'] })).toEqual([])
         // MetricsExporter: /sys, /proc, / all ro.
         expect(serviceVolumePaths({ volumes: ['/sys:/host/sys:ro', '/proc:/host/proc:ro', '/:/host/rootfs:ro'] })).toEqual([])

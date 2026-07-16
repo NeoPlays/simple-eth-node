@@ -82,7 +82,7 @@ describe('parseAnsi', () => {
 
     it('skips 256-colour foreground triplet (ESC[38;5;Nm) without affecting following text', () => {
         const segs = parseAnsi(`${ESC}[38;5;202morange${ESC}[0m next`)
-        // 256-colour codes are intentionally not mapped — segment should carry no fg class
+        // 256-colour codes are intentionally not mapped - segment should carry no fg class
         expect(segs[0].text).toBe('orange')
         expect(segs[0].classes).not.toContain(expect.stringMatching(/^ansi-/))
         expect(segs[1].text).toBe(' next')

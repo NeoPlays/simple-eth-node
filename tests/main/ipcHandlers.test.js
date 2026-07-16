@@ -375,7 +375,7 @@ describe('ipcHandlers', () => {
             expect(typeof sessionId).toBe('string')
             expect(fakeNode.streamServiceLogs).toHaveBeenCalledWith('svc-1', expect.objectContaining({ tail: 100 }))
 
-            // Emit a line — should broadcast to every BrowserWindow
+            // Emit a line - should broadcast to every BrowserWindow
             capturedOpts.onLine('hello')
             expect(fakeWindow.webContents.send).toHaveBeenCalledWith('service-log-data', { sessionId, line: 'hello' })
         })
@@ -463,7 +463,7 @@ describe('ipcHandlers', () => {
             expect(manifestState.lastUrl).toBe('https://stereum.com/downloads/updates.json')
         })
 
-        it('caches the response — subsequent calls do not hit the network', async () => {
+        it('caches the response - subsequent calls do not hit the network', async () => {
             manifestState.body = JSON.stringify({ ok: true })
             await handlers['fetch-updates-manifest'](event)
             await handlers['fetch-updates-manifest'](event)

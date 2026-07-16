@@ -345,7 +345,7 @@ describe('SSHService', () => {
         })
     })
 
-    describe('connect — keepalive & state', () => {
+    describe('connect - keepalive & state', () => {
         it('passes keepaliveInterval / keepaliveCountMax / readyTimeout to ssh2.connect', async () => {
             const svc = new SSHService(makeParams())
             const p = svc.connect()
@@ -418,7 +418,7 @@ describe('SSHService', () => {
         })
     })
 
-    describe('exec — timeout', () => {
+    describe('exec - timeout', () => {
         beforeEach(() => { vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] }) })
         afterEach(() => { vi.useRealTimers() })
 
@@ -449,7 +449,7 @@ describe('SSHService', () => {
             stream.emit('close', 0)
             const r = await promise
             expect(r.rc).toBe(0)
-            // advance past the timeout — should not double-reject
+            // advance past the timeout - should not double-reject
             await vi.advanceTimersByTimeAsync(SSHService.EXEC_TIMEOUT_MS + 1)
         })
 
@@ -458,7 +458,7 @@ describe('SSHService', () => {
             svc.connections = [{ conn: { exec: vi.fn() }, sessionCount: 0 }]
             const promise = svc.exec('hang', false, { timeoutMs: 60_000 })
             const assertion = expect(promise).rejects.toMatchObject({ rc: -1, message: /timeout/i })
-            // not yet — default would have fired here
+            // not yet - default would have fired here
             await vi.advanceTimersByTimeAsync(SSHService.EXEC_TIMEOUT_MS)
             expect(svc.connections.length).toBe(1)
             // crosses the override
@@ -472,7 +472,7 @@ describe('SSHService', () => {
             svc.connections = [{ conn: { exec: (cmd, cb) => { cb(null, stream) }, }, sessionCount: 0 }]
             const promise = svc.exec('playbook', false, { timeoutMs: SSHService.EXEC_TIMEOUT_MS })
             await vi.advanceTimersByTimeAsync(0)
-            // emit a chunk just before each timeout boundary — each resets the timer
+            // emit a chunk just before each timeout boundary - each resets the timer
             for (let i = 0; i < 5; i++) {
                 await vi.advanceTimersByTimeAsync(SSHService.EXEC_TIMEOUT_MS - 1)
                 stream.emit('data', Buffer.from(`task ${i}\n`))
@@ -543,7 +543,7 @@ describe('SSHService', () => {
             connectSpy.mockImplementation(async () => { svc._reachable = true })
 
             const p = svc._reconnectWithBackoff()
-            // Not yet — first delay is 2000ms
+            // Not yet - first delay is 2000ms
             await vi.advanceTimersByTimeAsync(1999)
             expect(connectSpy).not.toHaveBeenCalled()
             await vi.advanceTimersByTimeAsync(1)

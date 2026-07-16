@@ -31,6 +31,7 @@ export class Node {
         );
         this.settings = null;
         this.services = [];
+        this.setups = null;
     }
 
     _setStatus(status) {
@@ -65,7 +66,13 @@ export class Node {
         await this.fetchSettings(refresh);
         await this.fetchServices(refresh);
         await this.fetchServiceConfigs();
+        await this.fetchSetups(refresh);
         const containerStatuses = await this.fetchContainerStatuses();
+        // serviceId -> its setup, so each service DTO carries its group + network.
+        const setupByService = {}
+        for (const setup of this.setups) {
+            for (const sid of setup.services) setupByService[sid] = setup
+        }
         return {
             id: this.id,
             name: this.sshService.SSHParams.name,
@@ -74,11 +81,50 @@ export class Node {
             username: this.sshService.SSHParams.username,
             status: this.status,
             settings: this.settings,
-            services: this.services.map(s => ({
-                ...s,
-                container: containerStatuses[s.id] ?? null,
-            })),
+            setups: this.setups,
+            services: this.services.map(s => {
+                const su = setupByService[s.id]
+                return {
+                    ...s,
+                    container: containerStatuses[s.id] ?? null,
+                    setup: su ? { id: su.id, name: su.name, network: su.network, type: su.type, color: su.color } : null,
+                }
+            }),
         }
+    }
+
+    /**
+     * Read the multi-setup grouping from `/etc/stereum/multisetup.yaml` (same dir as
+     * stereum.yaml and services/, NOT under controls_install_path). The file is a map
+     * keyed by setup id; each entry has name/network/color/type and a list of member
+     * service ids. The `common` type holds node-wide services (prometheus, grafana,
+     * node exporter, ...); every other entry is a setup with its own network.
+     * Absent on single-setup / older nodes - logged as a warning, treated as no setups.
+     * @returns {Promise<{ id, name, network, color, type, services: string[] }[]>}
+     */
+    async fetchSetups(refresh = false) {
+        if (refresh || !this.setups) {
+            const path = '/etc/stereum/multisetup.yaml'
+            const response = await this.sshService.exec(`cat ${path}`)
+            // Missing file (rc 1) means no multi-setup grouping; log it and carry on.
+            if (response.rc !== 0 && response.rc !== null) {
+                log.warn(`Node :: ${this.sshService.SSHParams.host} :: ${path} not found or unreadable (rc=${response.rc}): ${response.stderr?.trim() || 'no stderr'}`)
+                this.setups = []
+                return this.setups
+            }
+            const parsed = response.stdout?.trim() ? YAML.parse(response.stdout) : null
+            this.setups = parsed && typeof parsed === 'object'
+                ? Object.entries(parsed).map(([id, s]) => ({
+                    id,
+                    name: s?.name ?? id,
+                    network: s?.network ?? null,
+                    color: s?.color ?? null,
+                    type: s?.type ?? null,
+                    services: Array.isArray(s?.services) ? s.services : [],
+                }))
+                : []
+        }
+        return this.setups
     }
 
     /**
