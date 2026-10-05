@@ -92,7 +92,7 @@ typings/
 # Electron-Forge
 out/
 
-docs/
+docs/local/
 
 # Generated test validator keystores (throwaway keys + their mnemonic).
 # Never commit key material, even for a testnet.
