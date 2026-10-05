@@ -3,6 +3,21 @@ import { readFileSync } from 'fs'
 import log from 'electron-log'
 import crypto from 'crypto'
 
+/**
+ * How much of a command is worth writing to the log. A beacon query embeds every validator pubkey
+ * in its POST body - 1000 keys is ~100 KB on ONE debug line, repeated on every tab load - which
+ * buries every other line in the file and makes the log useless exactly when it is needed. The
+ * command's shape is what is being debugged; the payload is recoverable from the code.
+ */
+export const MAX_LOGGED_COMMAND = 800
+
+/** A command trimmed for logging, with the elided length named so nothing looks silently complete. */
+export function forLog(command) {
+    const s = String(command ?? '')
+    if (s.length <= MAX_LOGGED_COMMAND) return s
+    return `${s.slice(0, MAX_LOGGED_COMMAND)}… [+${s.length - MAX_LOGGED_COMMAND} chars elided, ${s.length} total]`
+}
+
 export class SSHParams {
     constructor(host, port, username, password, privateKey, passphrase) {
         this.name = ""
@@ -161,7 +176,7 @@ export class SSHService {
         if (useSudo) {
             command = "sudo " + command
         }
-        log.debug('%cCOMMAND:%c', 'color: yellow', 'color: unset', command)
+        log.debug('%cCOMMAND:%c', 'color: yellow', 'color: unset', forLog(command))
         // The executor is async because it awaits _getConnection before wiring the stream.
         // Restructuring that touches every SSH call path in the app, so it stays as-is rather
         // than being changed as a side effect of an unrelated feature.
@@ -192,7 +207,7 @@ export class SSHService {
                 timer = setTimeout(() => {
                   if (settled) return
                   settled = true
-                  log.warn('SSH :: EXEC TIMEOUT (idle) ::', command)
+                  log.warn('SSH :: EXEC TIMEOUT (idle) ::', forLog(command))
                   try { activeStream?.close() } catch { /* ignore */ }
                   reject({ rc: -1, code: 1, message: 'SSH exec timeout' })
                 }, timeoutMs)
@@ -241,7 +256,7 @@ export class SSHService {
     /** Stream a long-running command line-by-line via onLine; returns a handle with abort(). */
     async execStream(command, { onLine, onClose, onError, useSudo = true } = {}) {
         if (useSudo) command = "sudo " + command
-        log.debug('SSH :: STREAM :: %s', command)
+        log.debug('SSH :: STREAM :: %s', forLog(command))
         let sshConn
         try {
             sshConn = await this._getConnection()

@@ -27,7 +27,7 @@ const { FakeClient, FakeStream } = vi.hoisted(() => {
 
 vi.mock('ssh2', () => ({ Client: FakeClient }))
 
-import { SSHService, SSHParams, SSHConnection } from '@main/ssh/SSHService'
+import { SSHService, SSHParams, SSHConnection, forLog, MAX_LOGGED_COMMAND } from '@main/ssh/SSHService'
 
 function makeParams() {
     return new SSHParams('h', 22, 'u', 'p', '/k', '')
@@ -45,6 +45,31 @@ function driveReady(client, hostname = 'box') {
     })
     setImmediate(() => client.emit('ready'))
 }
+
+describe('forLog', () => {
+    it('passes a normal command through untouched', () => {
+        expect(forLog('ls -la /etc')).toBe('ls -la /etc')
+    })
+    it('trims a command that embeds thousands of pubkeys', () => {
+        // The real shape: one beacon query with 1000 keys is ~100 KB on a single debug line.
+        const huge = `curl -d '{"ids":[${Array.from({ length: 1000 }, () => '"0x' + 'a'.repeat(96) + '"').join(',')}]}'`
+        const out = forLog(huge)
+        expect(huge.length).toBeGreaterThan(100_000)
+        expect(out.length).toBeLessThan(MAX_LOGGED_COMMAND + 100)
+        // The head survives, so the command is still identifiable from the log.
+        expect(out.startsWith('curl -d ')).toBe(true)
+    })
+    it('names how much it elided, so a trimmed line never reads as complete', () => {
+        const out = forLog('x'.repeat(MAX_LOGGED_COMMAND + 50))
+        expect(out).toContain('+50 chars elided')
+        expect(out).toContain(`${MAX_LOGGED_COMMAND + 50} total`)
+    })
+    it('handles empty and nullish commands', () => {
+        expect(forLog('')).toBe('')
+        expect(forLog(undefined)).toBe('')
+        expect(forLog(null)).toBe('')
+    })
+})
 
 describe('SSHConnection', () => {
     it('assigns a unique id and starts at sessionCount 0', () => {
