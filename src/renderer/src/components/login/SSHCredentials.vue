@@ -11,6 +11,7 @@
                         v-model="credentials[field.key]"
                         v-bind="field.modifiers ?? {}"
                         autocomplete="off"
+                        @keyup.enter="onEnter"
                     />
                     <button
                         v-if="field.browse"
@@ -80,6 +81,14 @@ async function importServer() {
 async function browsePrivateKey() {
     const path = await window.api.invoke('pick-private-key-file')
     if (path) credentials.value.privateKey = path
+}
+
+// Enter from any credential field connects, the way the Connect button would. The guard matters
+// because a disabled button stops clicks but not keystrokes: without it, holding Enter would fire
+// a second ssh-login while the first is still in flight.
+function onEnter() {
+    if (connecting.value) return
+    login()
 }
 
 async function login() {
