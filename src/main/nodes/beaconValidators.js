@@ -15,6 +15,7 @@ export const CHUNK_MARKER = '===VSTATE_CHUNK==='
 export const HTTP_MARKER = '===VSTATE_HTTP==='
 const REQUEST_TIMEOUT_S = 10
 const HEX_PUBKEY = /^0x[0-9a-fA-F]{2,}$/
+const INDEX = /^\d+$/   // a validator index is also a valid `ids` entry (DV pubkey lookup by index)
 
 /**
  * Trim + validate a user-supplied beacon base URL (the "stats beacon" override), returning it
@@ -75,7 +76,7 @@ export function toValidatorStat(raw) {
  */
 export function buildBeaconValidatorsScript(base, pubkeys, { chunkSize = 200 } = {}) {
     if (!base) return null
-    const ids = (Array.isArray(pubkeys) ? pubkeys : []).filter((p) => HEX_PUBKEY.test(String(p)))
+    const ids = (Array.isArray(pubkeys) ? pubkeys : []).filter((p) => HEX_PUBKEY.test(String(p)) || INDEX.test(String(p)))
     if (!ids.length) return null
     const curls = []
     for (let i = 0; i < ids.length; i += chunkSize) {

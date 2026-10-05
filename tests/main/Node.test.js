@@ -1076,7 +1076,102 @@ describe('Node', () => {
         })
     })
 
+    describe('DVT behind a validator client', () => {
+        const LH = (beacon) => `service: LighthouseValidatorService\ncommand:\n  - --http\n  - --beacon-nodes=${beacon}\n`
+        const PK = '0x' + 'a'.repeat(96)
+        const SHARE = '0x' + 'c'.repeat(96)
+        const DV = '0x' + 'd'.repeat(96)
+        const setupNode = (beacon) => {
+            node.setups = []
+            node.services = [{ id: 'vc', config: YAML_PARSE(LH(beacon)) }]
+        }
+        // Minimal YAML for the configs above (the module under test parses real YAML elsewhere).
+        const YAML_PARSE = (text) => ({
+            service: 'LighthouseValidatorService',
+            command: text.split('\n').filter((l) => l.startsWith('  - ')).map((l) => l.slice(4)),
+        })
+        const probeOut = (base, version, code = 200) =>
+            `===DVT_PROBE===${base}\n{"data":{"version":"${version}"}}\n===DVT_HTTP===${code}\n`
+
+        it('detects a remote Charon from its node version and caches the result', async () => {
+            setupNode('http://10.0.0.5:3600')
+            node.sshService.exec.mockImplementation(async (cmd) => {
+                if (cmd.startsWith('docker ps')) return ok('')
+                return ok(probeOut('http://10.0.0.5:3600', 'obolnetwork/charon/v1.5.0-abc/amd64-linux'))
+            })
+            const r = await node.detectDvtBackends()
+            expect(r.vc).toMatchObject({ client: 'charon', endpoint: 'http://10.0.0.5:3600', detectedBy: 'version' })
+            const calls = node.sshService.exec.mock.calls.length
+            await node.detectDvtBackends()
+            expect(node.sshService.exec.mock.calls.length).toBe(calls)
+        })
+
+        it('leaves a solo client alone when its endpoint is a real beacon', async () => {
+            setupNode('http://10.0.0.6:5052')
+            node.sshService.exec.mockImplementation(async (cmd) => {
+                if (cmd.startsWith('docker ps')) return ok('')
+                return ok(probeOut('http://10.0.0.6:5052', 'Lighthouse/v7.1.0'))
+            })
+            const r = await node.detectDvtBackends()
+            expect(r.vc.client).toBeNull()
+            expect(r.vc.beacons).toEqual(['http://10.0.0.6:5052'])
+        })
+
+        it('refuses every write for a client behind a remote Charon', async () => {
+            setupNode('http://10.0.0.5:3600')
+            node.sshService.exec.mockImplementation(async (cmd) => {
+                if (cmd.startsWith('cat /etc/stereum/services/vc.yaml')) return ok(LH('http://10.0.0.5:3600'))
+                if (cmd.startsWith('docker ps')) return ok('')
+                return ok(probeOut('http://10.0.0.5:3600', 'obolnetwork/charon/v1.5.0-abc/amd64-linux'))
+            })
+            const r = await node.setFeeRecipient('vc', [PK], '0x' + '1'.repeat(40))
+            expect(r.ok).toBe(false)
+            expect(r.error).toMatch(/Charon at http:\/\/10\.0\.0\.5:3600/)
+            const exit = await node.submitVoluntaryExit('vc', [PK])
+            expect(exit.ok).toBe(false)
+        })
+
+        it('refuses writes for a client sharing its setup with a local Charon', async () => {
+            node.setups = [{ id: 's1', services: ['vc', 'ch'] }]
+            node.services = [{ id: 'vc', config: { service: 'LighthouseValidatorService', command: [] } }, { id: 'ch', config: { service: 'CharonService' } }]
+            await expect(node._dvtBehind('vc')).resolves.toMatch(/CharonService in the same setup/)
+        })
+
+        it('maps shares to distributed validators: stats via Charon, pubkeys by index on a real beacon', async () => {
+            node._dvtBackends = { vc: { client: 'charon', endpoint: 'http://10.0.0.5:3600', version: 'x', detectedBy: 'version', beacons: [] } }
+            vi.spyOn(node, '_resolveBeaconBase').mockResolvedValue({ base: 'http://stereum-cl:5052', source: 'node' })
+            const viaCharon = JSON.stringify({ data: [{ index: '42', status: 'active_ongoing', balance: '32000000000', validator: { pubkey: SHARE } }] })
+            const viaBeacon = JSON.stringify({ data: [{ index: '42', status: 'active_ongoing', balance: '32000000000', validator: { pubkey: DV } }] })
+            node.sshService.exec.mockImplementation(async (cmd) => {
+                if (cmd.includes('10.0.0.5:3600')) return ok(`${viaCharon}\n===VSTATE_HTTP===200\n===VSTATE_CHUNK===\n`)
+                return ok(`${viaBeacon}\n===VSTATE_HTTP===200\n===VSTATE_CHUNK===\n`)
+            })
+            const r = await node.getDvtValidatorStates('vc', [SHARE])
+            expect(r.ok).toBe(true)
+            expect(r.states[SHARE]).toMatchObject({ index: 42, status: 'Active' })
+            expect(r.dvByShare).toEqual({ [SHARE]: DV })
+            expect(r.source).toBe('node')
+            // the index lookup went to the real beacon, asking by index
+            const lookup = node.sshService.exec.mock.calls.map((c) => c[0]).find((c) => c.includes('stereum-cl'))
+            expect(lookup).toContain('"ids":["42"]')
+        })
+
+        it('still returns Charon-sourced stats when no real beacon can resolve the pubkeys', async () => {
+            node._dvtBackends = { vc: { client: 'charon', endpoint: 'http://10.0.0.5:3600', version: 'x', detectedBy: 'version', beacons: [] } }
+            vi.spyOn(node, '_resolveBeaconBase').mockResolvedValue({ base: 'http://10.0.0.5:3600', source: 'validator-config' })
+            const viaCharon = JSON.stringify({ data: [{ index: '42', status: 'active_ongoing', validator: { pubkey: SHARE } }] })
+            node.sshService.exec.mockResolvedValue(ok(`${viaCharon}\n===VSTATE_HTTP===200\n===VSTATE_CHUNK===\n`))
+            const r = await node.getDvtValidatorStates('vc', [SHARE])
+            expect(r.ok).toBe(true)
+            expect(r.dvByShare).toEqual({})
+            expect(r.source).toBeNull()
+            expect(node.sshService.exec).toHaveBeenCalledTimes(1)
+        })
+    })
+
     describe('validator settings (fee recipient / graffiti)', () => {
+        // A solo client: the DVT gate (tested on its own below) says "not behind a DVT client".
+        beforeEach(() => { vi.spyOn(node, '_dvtBehind').mockResolvedValue(null) })
         const VC_YAML = 'service: LighthouseValidatorService\ncommand:\n  - --http\n'
         // Real-shaped BLS pubkeys: 0x + 96 hex. The code validates this before building a URL
         // path from them, so short stand-ins would not exercise the real path.
@@ -1214,6 +1309,8 @@ describe('Node', () => {
     })
 
     describe('deleteValidatorKeys', () => {
+        // A solo client: the DVT gate (tested on its own below) says "not behind a DVT client".
+        beforeEach(() => { vi.spyOn(node, '_dvtBehind').mockResolvedValue(null) })
         const VC_YAML = 'service: LighthouseValidatorService\ncommand:\n  - --http\n'
         const PK_A = '0x' + 'a'.repeat(96)
         const PK_B = '0x' + 'b'.repeat(96)
@@ -1296,6 +1393,8 @@ describe('Node', () => {
     })
 
     describe('importValidatorKeys', () => {
+        // A solo client: the DVT gate (tested on its own below) says "not behind a DVT client".
+        beforeEach(() => { vi.spyOn(node, '_dvtBehind').mockResolvedValue(null) })
         const VC_YAML = 'service: LighthouseValidatorService\ncommand:\n  - --http\n'
         const PK_A = '0x' + 'a'.repeat(96)
         const keystore = (pubkey) => JSON.stringify({ pubkey: pubkey.replace(/^0x/, ''), crypto: {} })
@@ -1361,6 +1460,8 @@ describe('Node', () => {
     })
 
     describe('submitVoluntaryExit', () => {
+        // A solo client: the DVT gate (tested on its own below) says "not behind a DVT client".
+        beforeEach(() => { vi.spyOn(node, '_dvtBehind').mockResolvedValue(null) })
         const VC_YAML = 'service: LighthouseValidatorService\ncommand:\n  - --http\n'
         const PK_A = '0x' + 'a'.repeat(96)
 

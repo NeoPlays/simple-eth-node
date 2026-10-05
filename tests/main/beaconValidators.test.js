@@ -97,6 +97,10 @@ describe('buildBeaconValidatorsScript', () => {
         const s = buildBeaconValidatorsScript('http://b', ['0xaa', 'bad', '0xbb'])
         expect(s).toContain(`"0xaa","0xbb"`)
     })
+    it('accepts validator indices too (DV pubkey lookup by index)', () => {
+        expect(buildBeaconValidatorsScript('http://b', ['42', '7'])).toContain(`-d '{"ids":["42","7"]}'`)
+        expect(buildBeaconValidatorsScript('http://b', ['4x2'])).toBeNull()
+    })
 })
 
 describe('parseBeaconStates', () => {

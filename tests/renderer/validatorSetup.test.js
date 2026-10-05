@@ -116,3 +116,37 @@ describe('holdsOnChainValidators', () => {
         expect(holdsOnChainValidators('ssv', 'ssv')).toBe(false)
     })
 })
+
+// A VC whose beacon endpoint is a Charon on another machine: the setup holds no DVT service, so
+// only the main process's probe (`dvtBackends`) can tell it is not a solo validator.
+describe('classifyValidatorSetup with a remote Charon', () => {
+    const vc = svc('v1', 'LighthouseValidatorService')
+    const remote = { v1: { client: 'charon', endpoint: 'http://10.0.0.5:3600', detectedBy: 'version' } }
+
+    it('is solo without probe data, and obol once the probe names Charon', () => {
+        expect(classifyValidatorSetup([vc]).kind).toBe('solo')
+        const r = classifyValidatorSetup([vc], { dvtBackends: remote })
+        expect(r.kind).toBe('obol')
+        expect(r.keyHolder).toBe(vc)
+        expect(r.remoteDvt).toMatchObject({ service: vc, client: 'charon', endpoint: 'http://10.0.0.5:3600' })
+        expect(isSoloEligible(r.kind)).toBe(false)
+    })
+
+    it('ignores a probe that found no DVT client', () => {
+        const r = classifyValidatorSetup([vc], { dvtBackends: { v1: { client: null } } })
+        expect(r.kind).toBe('solo')
+        expect(r.remoteDvt).toBeNull()
+    })
+
+    it('keeps a local Charon as the key holder; the VC beside it stays a share holder', () => {
+        const charon = svc('c1', 'CharonService')
+        const r = classifyValidatorSetup([charon, vc], { dvtBackends: remote })
+        expect(r.keyHolder).toBe(charon)
+        expect(r.remoteDvt).toBeNull()
+    })
+
+    it('wins over a remote signer: a Web3Signer behind a VC behind Charon still holds shares', () => {
+        const r = classifyValidatorSetup([vc, svc('w1', 'Web3SignerService')], { dvtBackends: remote })
+        expect(r.kind).toBe('obol')
+    })
+})

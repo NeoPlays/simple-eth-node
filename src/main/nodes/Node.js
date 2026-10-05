@@ -10,6 +10,7 @@ import {
 } from "@main/nodes/metrics";
 import {
     normalizeBeaconUrl, buildBeaconValidatorsScript, parseBeaconStates, configuredBeaconBases,
+    BEACON_ENDPOINT_FLAGS,
 } from "@main/nodes/beaconValidators";
 import {
     isResyncable, resolveDataDir, isSafeDataDir, updateSyncCommand, supportsCheckpointSync,
@@ -27,7 +28,10 @@ import {
     KEYSTORES_PATH, DELETE_OK_STATUSES, parseDeleteKeystoresResponse,
     deleteErrors, deleteNotFound, protectionCoversAll,
 } from "@main/nodes/keymanager";
-import { buildClusterLockReadCommand, parseClusterLock, isDvtService } from "@main/nodes/dvt";
+import {
+    buildClusterLockReadCommand, parseClusterLock, isDvtService,
+    buildDvtProbeScript, parseDvtProbe, classifyVcBackend, mapSharesToDv,
+} from "@main/nodes/dvt";
 import {
     buildChainContextScript, parseChainContext, buildDutiesScript, parseDuties,
     dutiesByIndex, dutiesMeta,
@@ -464,11 +468,113 @@ export class Node {
     }
 
     /** Resolve a key-holding service's parsed config, or throw if it is not a keymanager client. */
-    async _validatorConfig(serviceId) {
+    async _validatorConfig(serviceId, { write = false } = {}) {
         const config = YAML.parse(await this.fetchRawServiceConfig(serviceId))
         const info = keymanagerInfo(config)
         if (!info.capable || info.web3signer) return { error: 'This service does not support validator settings' }
+        if (write) {
+            // The UI gates these too, but a key share must never be written to on the UI's word alone.
+            const behind = await this._dvtBehind(serviceId)
+            if (behind) {
+                return { error: `Refused: this validator client runs behind ${behind}, so it holds key shares of distributed validators. Exits, key changes and fee recipient are multi-party actions (Obol DV Launchpad).` }
+            }
+        }
         return { config }
+    }
+
+    /**
+     * Which DVT client, if any, this validator client works behind - in its own setup, or on another
+     * machine via its configured beacon endpoint (see `detectDvtBackends`). Null for a solo client.
+     * @returns {Promise<string|null>} a description for the refusal message
+     */
+    async _dvtBehind(serviceId) {
+        if (this.setups === null) await this.fetchSetups()
+        if (!this.services?.length) await this.fetchServices()
+        if (this.services.some(s => !s.config)) await this.fetchServiceConfigs()
+        // Same grouping as the Validators tab: the service's setup, or every setup-less service.
+        const setup = (this.setups || []).find((su) => su.services.includes(serviceId))
+        const inSetup = setup
+            ? (s) => setup.services.includes(s.id)
+            : (s) => !(this.setups || []).some((su) => su.services.includes(s.id))
+        const local = this.services.find((s) => inSetup(s) && isDvtService(s.config))
+        if (local) return `${local.config.service} in the same setup`
+        const backend = (await this.detectDvtBackends())[serviceId]
+        if (backend?.client) return `${backend.client === 'pluto' ? 'Pluto' : 'Charon'} at ${backend.endpoint}`
+        return null
+    }
+
+    /**
+     * For every validator client on this node: is its beacon endpoint really a DVT client
+     * (Charon/Pluto), possibly on another machine? One sidecar probes every configured endpoint's
+     * /eth/v1/node/version, which Charon answers itself (see dvt.js). Cached for the node's lifetime;
+     * `refresh` re-probes (the Validators tab does on open, so a reconfigured client is picked up).
+     * @returns {Promise<{ [serviceId]: { client, endpoint, version, detectedBy, beacons } }>}
+     */
+    async detectDvtBackends({ refresh = false } = {}) {
+        if (this._dvtBackends && !refresh) return this._dvtBackends
+        if (!this.services?.length) await this.fetchServices()
+        if (this.services.some(s => !s.config)) await this.fetchServiceConfigs()
+        const containers = await this.fetchContainerStatuses()
+        const vcs = this.services.filter((s) => BEACON_ENDPOINT_FLAGS[s.config?.service] && !isDvtService(s.config))
+        const basesBy = Object.fromEntries(vcs.map((s) => [s.id, configuredBeaconBases([s], containers)]))
+        let probe = {}
+        const script = buildDvtProbeScript(Object.values(basesBy).flat())
+        if (script) {
+            const res = await this.sshService.exec(wrapSidecar(script), true, { timeoutMs: 30_000 })
+            probe = parseDvtProbe(res.stdout)
+        }
+        const out = {}
+        for (const [id, bases] of Object.entries(basesBy)) out[id] = classifyVcBackend(bases, probe)
+        this._dvtBackends = out
+        return out
+    }
+
+    /**
+     * On-chain state for a validator client's keys when it runs behind a (possibly remote) DVT
+     * client. Its keys are key shares, which have no beacon state of their own:
+     *  1. Charon is asked with the shares; it maps each to its distributed validator and answers
+     *     with that validator's index/status/balance - but with the pubkey rewritten back to the share.
+     *  2. The distributed validator's own pubkey is then looked up BY INDEX on a real beacon: the
+     *     stats-beacon override, else this node's running consensus client, else a non-DVT endpoint
+     *     the validator client also lists. Without one, stats still show, keyed by share.
+     * @returns {Promise<{ ok, states: { [share]: object }, dvByShare: { [share]: string }, source, base, lookupError?, dvt, error? }>}
+     */
+    async getDvtValidatorStates(serviceId, shares = [], { beaconUrl } = {}) {
+        const b = (await this.detectDvtBackends())[serviceId]
+        if (!b?.client) return { ok: false, error: 'This validator client is not behind a DVT client', states: {}, dvByShare: {} }
+        const dvt = { client: b.client, endpoint: b.endpoint, version: b.version, detectedBy: b.detectedBy }
+
+        const viaDvt = buildBeaconValidatorsScript(b.endpoint, shares)
+        if (!viaDvt) return { ok: true, states: {}, dvByShare: {}, source: null, base: null, dvt }
+        const res = await this.sshService.exec(wrapSidecar(viaDvt), true, { timeoutMs: 30_000 })
+        const { states, codes } = parseBeaconStates(res.stdout)
+        if (codes.length && !codes.some((c) => c >= 200 && c < 300)) {
+            const c = codes[0]
+            const name = b.client === 'pluto' ? 'Pluto' : 'Charon'
+            return { ok: false, error: c > 0 ? `${name} returned HTTP ${c}` : `${name} at ${b.endpoint} is unreachable or timed out`, states: {}, dvByShare: {}, dvt }
+        }
+
+        const override = beaconUrl ? normalizeBeaconUrl(beaconUrl) : null
+        let target = override ? { base: override, source: 'custom' } : null
+        if (!target) {
+            const own = await this._resolveBeaconBase()
+            if (own.source === 'node') target = own
+        }
+        if (!target && b.beacons.length) target = { base: b.beacons[0], source: 'validator-config' }
+
+        const indices = Object.values(states).map((s) => s.index).filter((i) => i != null).map(String)
+        let dvByShare = {}
+        let lookupError = null
+        if (target && indices.length) {
+            const res2 = await this.sshService.exec(wrapSidecar(buildBeaconValidatorsScript(target.base, indices)), true, { timeoutMs: 30_000 })
+            const looked = parseBeaconStates(res2.stdout)
+            if (looked.codes.length && !looked.codes.some((c) => c >= 200 && c < 300)) {
+                lookupError = `Could not look up the distributed validator keys on ${target.base}`
+            } else {
+                dvByShare = mapSharesToDv(states, looked.states)
+            }
+        }
+        return { ok: true, states, dvByShare, source: target?.source ?? null, base: target?.base ?? null, lookupError, dvt }
     }
 
     /**
@@ -550,7 +656,7 @@ export class Node {
      * @returns {Promise<{ ok, results?, slashingProtection?, complete?, error?, httpCode? }>}
      */
     async deleteValidatorKeys(serviceId, pubkeys = []) {
-        const c = await this._validatorConfig(serviceId)
+        const c = await this._validatorConfig(serviceId, { write: true })
         if (c.error) return { ok: false, error: c.error }
         if (!pubkeys.length) return { ok: false, error: 'No keys selected' }
 
@@ -657,7 +763,7 @@ export class Node {
      * @returns {Promise<{ ok, results?, error?, httpCode? }>}
      */
     async importValidatorKeys(serviceId, keystores = [], passwords = [], slashingProtection = null, { acknowledgedNeverSigned = false } = {}) {
-        const c = await this._validatorConfig(serviceId)
+        const c = await this._validatorConfig(serviceId, { write: true })
         if (c.error) return { ok: false, error: c.error }
         if (!keystores.length) return { ok: false, error: 'No keystores selected' }
         if (keystores.length !== passwords.length) {
@@ -731,7 +837,7 @@ export class Node {
      * @returns {Promise<{ ok, results?: { [pubkey]: { ok, error? } }, error? }>}
      */
     async submitVoluntaryExit(serviceId, pubkeys = [], { beaconUrl } = {}) {
-        const c = await this._validatorConfig(serviceId)
+        const c = await this._validatorConfig(serviceId, { write: true })
         if (c.error) return { ok: false, error: c.error }
         if (!pubkeys.length) return { ok: false, error: 'No keys selected' }
 
@@ -782,7 +888,7 @@ export class Node {
 
     /** Shared tail of the per-key write ops: batch, then judge each response on its own status. */
     async _applyValidatorWrite(serviceId, pubkeys, makeRequest, clearing) {
-        const c = await this._validatorConfig(serviceId)
+        const c = await this._validatorConfig(serviceId, { write: true })
         if (c.error) return { ok: false, error: c.error }
         if (!pubkeys.length) return { ok: false, error: 'No keys selected' }
 

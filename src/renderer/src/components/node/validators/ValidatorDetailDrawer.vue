@@ -19,6 +19,9 @@
                     <div class="pubkey-block mono" @click="copy(validator.pubkey)" :title="'Click to copy'">{{ validator.pubkey }}</div>
 
                     <div class="facts">
+                        <div v-if="validator.share && validator.share !== validator.pubkey" class="fact">
+                            <span class="fact-label">Key share (this operator)</span><span class="fact-value mono">{{ validator.share }}</span>
+                        </div>
                         <div class="fact"><span class="fact-label">Balance</span><span class="fact-value mono">{{ eth(validator.balance) }}</span></div>
                         <div class="fact"><span class="fact-label">Effective balance</span><span class="fact-value mono">{{ eth(validator.effectiveBalance) }}</span></div>
                         <div class="fact"><span class="fact-label">Withdrawal creds</span><span class="fact-value mono">{{ withdrawalText(validator.withdrawalType) }}</span></div>

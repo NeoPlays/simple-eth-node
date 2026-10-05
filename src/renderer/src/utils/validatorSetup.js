@@ -10,6 +10,9 @@
 //                    Charon's cluster-lock.json (read via the CharonService), not in the VC's
 //                    share keystores - so keyHolder is the Charon service. Mutations
 //                    (add/exit/remove) are multi-party and stay disabled (isSoloEligible=false).
+//                    Also obol: a VC whose beacon endpoint IS a Charon/Pluto on another machine
+//                    (`dvtBackends`, probed by the main process). Nothing in the setup says
+//                    Obol then, but the VC still holds shares; keyHolder is that VC.
 //   - ssv:           an SSV operator node holds on-chain-delivered shares; registration
 //                    and exit are wallet/multi-operator actions done off-node.
 
@@ -30,6 +33,7 @@ export const WEB3SIGNER_TYPE = 'Web3SignerService'
 
 /**
  * @param {{ id: string, config?: { service?: string } }[]} services - the services in one setup
+ * @param {{ dvtBackends?: { [serviceId]: { client: string|null } } }} opts - from `detect-dvt-backends`
  * @returns {{
  *   kind: 'solo'|'remote-signer'|'obol'|'ssv'|'none',
  *   clients: object[],        // all validator-category services in the setup
@@ -37,9 +41,10 @@ export const WEB3SIGNER_TYPE = 'Web3SignerService'
  *   charon: object|null,
  *   ssv: object|null,
  *   web3signer: object|null,
+ *   remoteDvt: object|null,  // the VC working behind a DVT client elsewhere, with its backend info
  * }}
  */
-export function classifyValidatorSetup(services = []) {
+export function classifyValidatorSetup(services = [], { dvtBackends = null } = {}) {
     const typeOf = (s) => s?.config?.service
     const find = (t) => services.find((s) => typeOf(s) === t) || null
 
@@ -47,6 +52,9 @@ export function classifyValidatorSetup(services = []) {
     const ssv = find(SSV_TYPE)
     const web3signer = find(WEB3SIGNER_TYPE)
     const vcs = services.filter((s) => SOLO_VC_TYPES.has(typeOf(s)))
+    // Only when no DVT client is in the setup: with a local Charon the VC is the usual share holder.
+    const remoteVc = charon ? null : (vcs.find((v) => dvtBackends?.[v.id]?.client) || null)
+    const remoteDvt = remoteVc ? { service: remoteVc, ...dvtBackends[remoteVc.id] } : null
     const clients = services.filter((s) =>
         SOLO_VC_TYPES.has(typeOf(s)) || isDvtType(typeOf(s)) || typeOf(s) === SSV_TYPE || typeOf(s) === WEB3SIGNER_TYPE)
 
@@ -58,10 +66,12 @@ export function classifyValidatorSetup(services = []) {
     if (ssv) kind = 'ssv' // keyHolder stays null: SSV lists via the external api.ssv.network (not yet wired)
     // Obol: list the cluster's distributed-validator pubkeys from Charon's cluster-lock.json.
     else if (charon) { kind = 'obol'; keyHolder = charon }
+    // Remote Charon: the VC's shares are the only handle on the DVs, mapped to them via the beacon.
+    else if (remoteVc) { kind = 'obol'; keyHolder = remoteVc }
     else if (web3signer) { kind = 'remote-signer'; keyHolder = web3signer }
     else if (vcs.length) { kind = 'solo'; keyHolder = vcs[0] }
 
-    return { kind, clients, keyHolder, charon, ssv, web3signer }
+    return { kind, clients, keyHolder, charon, ssv, web3signer, remoteDvt }
 }
 
 /** Only solo setups may use the local keystore import/remove/exit lifecycle (slashing gate S4). */

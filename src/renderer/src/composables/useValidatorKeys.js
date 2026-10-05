@@ -61,6 +61,43 @@ export function useValidatorKeys(nodeId) {
     }
 
     /**
+     * Stats for a validator client behind a (remote) DVT client. Its keys are key shares; the main
+     * process asks Charon with them (stats of the distributed validator they belong to) and looks
+     * up each distributed validator's own pubkey by index on a real beacon. Rows then show the DV
+     * pubkey with the share kept alongside; where no beacon could resolve it, the share stays the
+     * row's key (`dvKnown: false`) so nothing is presented as a pubkey it is not.
+     */
+    async function loadDvtStates(serviceId, beaconUrl) {
+        const entry = cache[serviceId]
+        if (!serviceId || !entry?.keys?.length) return
+        const shares = entry.keys.map((k) => k.share ?? k.pubkey)
+        cache[serviceId] = { ...entry, statesLoading: true, statesError: '' }
+        try {
+            const res = await window.api.invoke('get-dvt-validator-states', resolveNodeId(), serviceId, shares, beaconUrl || null)
+            if (!res?.ok) {
+                cache[serviceId] = { ...cache[serviceId], statesLoading: false, statesError: res?.error || 'Could not load validator stats', dvt: res?.dvt ?? null }
+                return
+            }
+            const dvByShare = res.dvByShare || {}
+            const states = {}
+            const keys = cache[serviceId].keys.map((k) => {
+                const share = String(k.share ?? k.pubkey)
+                const dv = dvByShare[share.toLowerCase()] || dvByShare[share] || null
+                const shown = dv || share
+                const s = res.states?.[share.toLowerCase()]
+                if (s) states[shown.toLowerCase()] = { ...s, pubkey: shown.toLowerCase() }
+                return { ...k, pubkey: shown, share, dvKnown: Boolean(dv) }
+            })
+            cache[serviceId] = {
+                ...cache[serviceId], keys, states, statesLoading: false, statesError: '',
+                statesSource: res.source, statesBase: res.base, dvt: res.dvt, dvtLookupError: res.lookupError || '',
+            }
+        } catch (e) {
+            cache[serviceId] = { ...cache[serviceId], statesLoading: false, statesError: e?.message || 'Could not load validator stats' }
+        }
+    }
+
+    /**
      * Load upcoming duties (sync-committee membership, this epoch's proposals) for the keys that
      * already have an on-chain index - duties are keyed by validator index, so a key the beacon has
      * no state for simply has none to report. Runs after `loadStates`, which is what supplies them.
@@ -107,5 +144,5 @@ export function useValidatorKeys(nodeId) {
 
     const state = (serviceId) => cache[serviceId] ?? { loading: false, keys: [], error: '' }
 
-    return { cache, load, loadStates, loadDuties, loadSettings, state }
+    return { cache, load, loadStates, loadDvtStates, loadDuties, loadSettings, state }
 }

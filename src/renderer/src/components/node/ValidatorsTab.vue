@@ -56,6 +56,26 @@
                 <div v-else-if="st.error" class="notice error">{{ st.error }}</div>
 
                 <template v-else>
+                    <!-- A VC signing through a DVT client elsewhere: nothing in this node's setup says Obol. -->
+                    <!-- One wrapper: .notice.info is a flex row, which would split loose text into columns. -->
+                    <div v-if="activeHolder.dvt" class="notice info">
+                        <div>
+                            This {{ shortName(activeService) }} validator client signs through {{ dvtName(activeHolder.dvt) }} at
+                            <span class="mono">{{ activeHolder.dvt.endpoint }}</span>. The keys it holds are key shares, so this list shows
+                            the distributed validators they belong to. Exits, key changes and fee recipient are multi-party actions
+                            (Obol DV Launchpad), so this node can only read and monitor.
+                            <span v-if="activeHolder.dvt.detectedBy === 'port'" class="notice-sub">
+                                The endpoint did not answer; it is treated as {{ dvtName(activeHolder.dvt) }} because it uses port 3600.
+                            </span>
+                        </div>
+                    </div>
+                    <div v-else-if="activeHolder.role === 'validator' && dvtStatus === 'pending'" class="notice muted">
+                        Checking whether this validator client runs behind Charon. Key changes are disabled until the check finishes.
+                    </div>
+                    <div v-else-if="activeHolder.role === 'validator' && dvtStatus === 'failed'" class="notice error">
+                        Could not check whether this validator client runs behind Charon, so key changes stay disabled. Refresh to try again.
+                    </div>
+
                     <!-- Facet cards -->
                     <div class="facets">
                         <button
@@ -313,9 +333,28 @@ const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
 // object instead of allocating a fresh one per row on each recompute.
 const EMPTY_DUTY = Object.freeze({ syncCurrent: false, syncNext: false, proposals: Object.freeze([]) })
 
-function roleOf(service, kind) {
+// Which validator clients sign through a DVT client (Charon/Pluto), possibly on another machine.
+// Until the main process has probed, nobody gets solo writes: 'pending' and 'failed' both gate.
+const dvtBackends = ref(null)
+const dvtStatus = ref('pending')   // 'pending' | 'done' | 'failed'
+async function detectDvt() {
+    dvtStatus.value = 'pending'
+    try {
+        const r = await window.api.invoke('detect-dvt-backends', props.nodeId, true)
+        dvtBackends.value = r || {}
+        dvtStatus.value = r ? 'done' : 'failed'
+    } catch {
+        dvtBackends.value = {}
+        dvtStatus.value = 'failed'
+    }
+}
+const dvtName = (dvt) => (dvt?.client === 'pluto' ? 'Pluto' : 'Charon')
+
+function roleOf(service, kind, cls = null) {
     const t = service?.config?.service
     if (isDvtType(t)) return 'distributed'
+    // A VC behind a remote Charon stands in for the cluster: its shares map to the DV pubkeys.
+    if (cls?.remoteDvt?.service?.id === service?.id) return 'distributed'
     if (t === 'SSVNetworkService') return 'ssv'
     if (t === 'Web3SignerService') return 'signer'
     if (SOLO_VC_TYPES.has(t)) return kind === 'obol' ? 'share' : 'validator'
@@ -332,10 +371,10 @@ const holders = computed(() => {
     }
     const out = []
     for (const grp of bySetup.values()) {
-        const cls = classifyValidatorSetup(grp.services)
+        const cls = classifyValidatorSetup(grp.services, { dvtBackends: dvtBackends.value })
         if (cls.kind === 'none') continue
         for (const s of grp.services) {
-            const role = roleOf(s, cls.kind)
+            const role = roleOf(s, cls.kind, cls)
             if (!role) continue
             out.push({
                 key: s.id, service: s, kind: cls.kind, role, setup: grp.setup,
@@ -343,7 +382,9 @@ const holders = computed(() => {
                 // Only a solo VC holds keys we may act on alone. A VC behind Charon holds a
                 // key SHARE: a keymanager write there is either meaningless or needs a
                 // threshold of operators, so every mutating action stays gated off.
-                soloEligible: isSoloEligible(cls.kind) && role === 'validator',
+                // ...and only once the DVT probe has cleared it: a remote Charon is invisible in the setup.
+                soloEligible: isSoloEligible(cls.kind) && role === 'validator' && dvtStatus.value === 'done',
+                dvt: cls.remoteDvt?.service?.id === s.id ? cls.remoteDvt : null,
                 // Share pubkeys (VC/Web3Signer behind Charon) have no on-chain stats.
                 onChainStats: holdsOnChainValidators(role, cls.kind),
             })
@@ -352,7 +393,7 @@ const holders = computed(() => {
     return out
 })
 
-const { load, loadStates, loadDuties, loadSettings, state } = useValidatorKeys(() => props.nodeId)
+const { load, loadStates, loadDvtStates, loadDuties, loadSettings, state } = useValidatorKeys(() => props.nodeId)
 const { locales } = useLocale()
 
 // Per-node "stats beacon" override (empty = the node's own beacon). Persisted in electron-store.
@@ -397,6 +438,8 @@ const rows = computed(() => {
         const s = states[String(k.pubkey || '').toLowerCase()] || null
         return {
             pubkey: k.pubkey, readonly: k.readonly,
+            // Behind a remote Charon: the operator's share, and whether the DV pubkey could be resolved.
+            share: k.share ?? null, dvKnown: k.dvKnown ?? true,
             index: s?.index ?? null, status: s?.status ?? null, slashed: s?.slashed ?? false,
             balance: s?.balance ?? null, effectiveBalance: s?.effectiveBalance ?? null,
             withdrawalType: s?.withdrawalType ?? null, activationEpoch: s?.activationEpoch ?? null,
@@ -457,6 +500,15 @@ const statsError = computed(() => st.value.statesError || '')
 // Which beacon answered, when it wasn't this node's own running CL. The fallback names its URL:
 // the user did not pick it, and a stale endpoint in the VC's config is otherwise invisible.
 const statsSourceNote = computed(() => {
+    const dvt = activeHolder.value?.dvt
+    if (dvt) {
+        const via = `Stats read through ${dvtName(dvt)} at ${dvt.endpoint}`
+        if (st.value.dvtLookupError) return `${via}. ${st.value.dvtLookupError}, so key shares are shown instead.`
+        if (!st.value.statesBase) {
+            return `${via}. Showing key shares: resolving the distributed validator keys needs a beacon node that is not ${dvtName(dvt)} - set a stats beacon URL.`
+        }
+        return `${via}, distributed validator keys looked up on ${st.value.statesBase}`
+    }
     const base = st.value.statesBase
     if (st.value.statesSource === 'custom') return 'Stats read from a custom beacon URL'
     if (st.value.statesSource === 'validator-config') {
@@ -559,10 +611,18 @@ function selectService(h) {
     scope.value = 'all'; page.value = 1; detail.value = null
     if (h.listable) load(h.service.id).then(() => { enrich(h); loadKeymanagerSettings(h) })
 }
-function refresh() {
+async function refresh() {
+    await detectDvt()
     const h = activeHolder.value
     if (h) load(h.service.id, { force: true }).then(() => { enrich(h); loadKeymanagerSettings(h) })
 }
+
+// The probe can land after the first key load. If it turns the open client into a remote-Charon
+// holder, its rows were loaded and enriched as solo keys - reload them the DVT way.
+watch(dvtBackends, () => {
+    const h = activeHolder.value
+    if (h?.dvt && h.listable) load(h.service.id, { force: true }).then(() => enrich(h))
+})
 
 // On-chain holders (solo VC keys, Charon DV pubkeys) get beacon-state enrichment; shares don't.
 // Duties follow the state read rather than running beside it: they are keyed by validator index,
@@ -571,7 +631,8 @@ async function enrich(h) {
     if (!h?.onChainStats) return
     const keys = state(h.service.id).keys
     if (!keys?.length) return
-    await loadStates(h.service.id, keys.map((k) => k.pubkey), beaconUrl.value)
+    if (h.dvt) await loadDvtStates(h.service.id, beaconUrl.value)
+    else await loadStates(h.service.id, keys.map((k) => k.pubkey), beaconUrl.value)
     const indices = Object.values(state(h.service.id).states || {}).map((s) => s.index).filter((i) => i != null)
     if (indices.length) loadDuties(h.service.id, indices, beaconUrl.value)
 }
@@ -789,6 +850,7 @@ let seeded = false
 watch(() => props.active, (isActive) => {
     if (!isActive || seeded || !holders.value.length) return
     seeded = true
+    detectDvt()
     const first = holders.value.find((h) => h.listable) || holders.value[0]
     if (first) selectService(first)
 }, { immediate: true })

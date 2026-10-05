@@ -462,6 +462,30 @@ export function initializeIpcHandlers() {
         }
     });
 
+    // Which validator clients run behind a DVT client (Charon/Pluto), local or on another machine.
+    // A failed probe returns null, which the renderer treats as "unknown" and keeps writes gated.
+    ipcMain.handle('detect-dvt-backends', async (_, nodeId, refresh = false) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.detectDvtBackends({ refresh })
+        } catch (error) {
+            log.error('detect-dvt-backends error:', error)
+            return null
+        }
+    });
+
+    ipcMain.handle('get-dvt-validator-states', async (_, nodeId, serviceId, shares, beaconUrl) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.getDvtValidatorStates(serviceId, shares, { beaconUrl })
+        } catch (error) {
+            log.error('get-dvt-validator-states error:', error)
+            return { ok: false, error: error.message || 'get-dvt-validator-states failed', states: {}, dvByShare: {} }
+        }
+    });
+
     /**
      * The OS's own language/region preferences, most-preferred first, for Intl formatting.
      *

@@ -65,6 +65,8 @@ const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeTaskManager, fakeW
             restartChangedServices: vi.fn(),
             runFullUpdate: vi.fn(),
             setUpdateSettings: vi.fn(),
+            detectDvtBackends: vi.fn(),
+            getDvtValidatorStates: vi.fn(),
             applyUpdateSchedule: vi.fn(),
             getUpdateSettings: vi.fn(),
             streamServiceLogs: vi.fn(),
@@ -127,6 +129,7 @@ describe('ipcHandlers', () => {
         expect(Object.keys(handlers).sort()).toEqual([
             'check-checkpoint-sync',
             'delete-validator-keys',
+            'detect-dvt-backends',
             'disconnect-node',
             'fetch-updates-manifest',
             'get-all-nodes',
@@ -134,6 +137,7 @@ describe('ipcHandlers', () => {
             'get-container-statuses',
             'get-controls-commit',
             'get-disk-usage',
+            'get-dvt-validator-states',
             'get-exit-preflight',
             'get-node',
             'get-os-info',
@@ -347,6 +351,26 @@ describe('ipcHandlers', () => {
 
             fakeNodeManager.findNode.mockReturnValueOnce(null)
             await expect(handlers['get-controls-commit'](event, 'n')).rejects.toThrow('Node not found')
+        })
+
+        it('detect-dvt-backends delegates, and returns null (unknown) on failure', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.detectDvtBackends.mockResolvedValueOnce({ vc: { client: 'charon' } })
+            expect(await handlers['detect-dvt-backends'](event, 'n', true)).toEqual({ vc: { client: 'charon' } })
+            expect(fakeNode.detectDvtBackends).toHaveBeenCalledWith({ refresh: true })
+
+            fakeNodeManager.findNode.mockReturnValueOnce(null)
+            expect(await handlers['detect-dvt-backends'](event, 'n')).toBeNull()
+        })
+
+        it('get-dvt-validator-states delegates and returns a soft error on failure', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.getDvtValidatorStates.mockResolvedValueOnce({ ok: true, states: {}, dvByShare: {} })
+            await handlers['get-dvt-validator-states'](event, 'n', 'vc', ['0xaa'], 'http://b:5052')
+            expect(fakeNode.getDvtValidatorStates).toHaveBeenCalledWith('vc', ['0xaa'], { beaconUrl: 'http://b:5052' })
+
+            fakeNodeManager.findNode.mockReturnValueOnce(null)
+            expect(await handlers['get-dvt-validator-states'](event, 'n', 'vc', [])).toMatchObject({ ok: false, error: 'Node not found' })
         })
 
         it('get-update-settings delegates and propagates errors', async () => {
