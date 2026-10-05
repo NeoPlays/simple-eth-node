@@ -1,4 +1,4 @@
-import { ipcMain, BrowserWindow, dialog, net } from "electron";
+import { app, ipcMain, BrowserWindow, dialog, net } from "electron";
 import { readFileSync, writeFileSync } from "fs";
 import { basename } from "path";
 import storage from "@main/store/StoreService"
@@ -436,6 +436,37 @@ export function initializeIpcHandlers() {
         } catch (error) {
             log.error('get-validator-states error:', error)
             return { ok: false, error: error.message || 'get-validator-states failed', states: {} }
+        }
+    });
+
+    /**
+     * The OS's own language/region preferences, most-preferred first, for Intl formatting.
+     *
+     * Not the same as the app locale: `app.getLocale()` (and therefore `navigator.language` and a
+     * bare `toLocaleString()`) reports the locale Chromium resolved for the UI, which falls back to
+     * en-US when the app ships no matching translation. A user on a German or British machine would
+     * then read US date order in an app that is otherwise correct about their machine.
+     */
+    ipcMain.handle('get-system-locale', () => {
+        try {
+            const preferred = app.getPreferredSystemLanguages?.() || []
+            if (preferred.length) return preferred
+            const single = app.getSystemLocale?.()
+            return single ? [single] : []
+        } catch (error) {
+            log.error('get-system-locale error:', error)
+            return []   // the renderer then keeps Intl's own default
+        }
+    });
+
+    ipcMain.handle('get-validator-duties', async (_, nodeId, indices, beaconUrl) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.getValidatorDuties(indices, { beaconUrl })
+        } catch (error) {
+            log.error('get-validator-duties error:', error)
+            return { ok: false, error: error.message || 'get-validator-duties failed', duties: {} }
         }
     });
 

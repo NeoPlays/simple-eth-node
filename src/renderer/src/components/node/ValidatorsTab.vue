@@ -80,6 +80,15 @@
                         <template v-else>{{ statsSourceNote }}</template>
                     </div>
 
+                    <div v-if="dutiesLoading || dutiesError || dutiesNote" class="stats-line" :class="{ error: !!dutiesError }">
+                        <template v-if="dutiesLoading">Loading duties…</template>
+                        <template v-else-if="dutiesError">{{ dutiesError }}</template>
+                        <template v-else>
+                            <strong v-if="nextProposalNote" class="duty-lead">{{ nextProposalNote }}</strong>
+                            {{ dutiesNote }}
+                        </template>
+                    </div>
+
                     <!-- Table card -->
                     <div class="table-card">
                         <!-- Toolbar -->
@@ -92,11 +101,27 @@
                                 v-for="c in CHIPS"
                                 :key="c.key"
                                 class="chip"
-                                :class="{ on: chips[c.key], disabled: !statusKnown }"
-                                :disabled="!statusKnown"
-                                :title="!statusKnown ? 'Needs validator data' : ''"
+                                :class="{ on: chips[c.key], disabled: chipDisabled(c.key) }"
+                                :disabled="chipDisabled(c.key)"
+                                :title="chipDisabled(c.key) ? 'Needs validator data' : ''"
                                 @click="toggleChip(c.key)"
                             >{{ c.label }}</button>
+
+                            <span v-if="statsApplicable" class="chip-sep"></span>
+                            <button
+                                v-for="c in DUTY_CHIPS"
+                                v-show="statsApplicable"
+                                :key="c.key"
+                                class="chip chip-duty"
+                                :class="{ on: chips[c.key], disabled: chipDisabled(c.key), empty: dutyCounts[c.key] === 0 }"
+                                :disabled="chipDisabled(c.key)"
+                                :title="chipDisabled(c.key) ? 'Needs duty data' : `Show only the ${dutyCounts[c.key]} key(s) with this duty`"
+                                @click="toggleChip(c.key)"
+                            >
+                                <span v-if="c.color" class="dot" :style="{ background: c.color }"></span>
+                                {{ c.label }}
+                                <span class="chip-count mono">{{ dutiesKnown ? dutyCounts[c.key] : '-' }}</span>
+                            </button>
                         </div>
 
                         <!-- Scope + action bar -->
@@ -145,6 +170,7 @@
                             :pages="pages"
                             :size="size"
                             :range-label="rangeLabel"
+                            :duties-meta="dutiesMeta"
                             @row-click="detail = $event"
                             @toggle="toggleRow"
                             @toggle-all="toggleAll"
@@ -240,6 +266,9 @@ import { classifyValidatorSetup, SOLO_VC_TYPES, isDvtType, holdsOnChainValidator
 import { capabilityFor, explorerUrl, actionDisabled } from '@renderer/utils/validatorCapabilities'
 import { useValidatorKeys } from '@renderer/composables/useValidatorKeys'
 import { scopeTargets, effectiveScopeOf, scopeCountOf } from '@renderer/utils/validatorScope'
+import { countDuties, matchesDutyChips, allProposals } from '@renderer/utils/validatorDutyFilter'
+import { formatDateTime, formatTime } from '@renderer/utils/datetime'
+import { useLocale } from '@renderer/composables/useLocale'
 import ValidatorTable from './validators/ValidatorTable.vue'
 import ValidatorDetailDrawer from './validators/ValidatorDetailDrawer.vue'
 import ValidatorSettingModal from './validators/ValidatorSettingModal.vue'
@@ -266,12 +295,23 @@ const CHIPS = [
     { key: 'feeSet', label: 'Fee recipient set' },
     { key: 'missingGraffiti', label: 'Missing graffiti' },
 ]
+// Duty chips carry their own count, so the row of chips doubles as the overview: at 1000 keys the
+// per-row pill is unfindable, and the question is almost always "how many, and which ones?".
+// Clicking answers the second half by filtering the table down to exactly those keys.
+const DUTY_CHIPS = [
+    { key: 'dutyPropose', label: 'Proposing', color: 'var(--color-warning)' },
+    { key: 'dutySync', label: 'Sync committee', color: 'var(--color-accent)' },
+    { key: 'dutySyncNext', label: 'Sync next', color: null },
+]
 const SCOPES = [
     { key: 'all', label: 'All keys' },
     { key: 'filtered', label: 'Current filter' },
     { key: 'selected', label: 'Selection' },
 ]
 const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
+// An on-chain validator with nothing scheduled. Shared (frozen) so every such row points at one
+// object instead of allocating a fresh one per row on each recompute.
+const EMPTY_DUTY = Object.freeze({ syncCurrent: false, syncNext: false, proposals: Object.freeze([]) })
 
 function roleOf(service, kind) {
     const t = service?.config?.service
@@ -312,7 +352,8 @@ const holders = computed(() => {
     return out
 })
 
-const { load, loadStates, loadSettings, state } = useValidatorKeys(() => props.nodeId)
+const { load, loadStates, loadDuties, loadSettings, state } = useValidatorKeys(() => props.nodeId)
+const { locales } = useLocale()
 
 // Per-node "stats beacon" override (empty = the node's own beacon). Persisted in electron-store.
 const beaconUrl = ref('')
@@ -327,7 +368,7 @@ const activeKey = ref(null)
 const query = ref('')
 const queryD = ref('')
 const filter = ref('All')
-const chips = reactive({ cred01: false, feeSet: false, missingGraffiti: false })
+const chips = reactive({ cred01: false, feeSet: false, missingGraffiti: false, dutyPropose: false, dutySync: false, dutySyncNext: false })
 const selected = reactive(new Set())
 const allMatching = ref(false)
 const scope = ref('all')
@@ -351,6 +392,7 @@ const statsApplicable = computed(() => Boolean(activeHolder.value?.onChainStats)
 const rows = computed(() => {
     const states = st.value.states || {}
     const settings = st.value.settings || {}
+    const duties = st.value.duties || {}
     return st.value.keys.map((k) => {
         const s = states[String(k.pubkey || '').toLowerCase()] || null
         return {
@@ -360,10 +402,49 @@ const rows = computed(() => {
             withdrawalType: s?.withdrawalType ?? null, activationEpoch: s?.activationEpoch ?? null,
             feeRecipient: settings[k.pubkey]?.feeRecipient ?? null,
             graffiti: settings[k.pubkey]?.graffiti ?? null,
+            duty: s?.index != null ? (duties[String(s.index)] ?? EMPTY_DUTY) : null,
         }
     })
 })
 const statusKnown = computed(() => rows.value.some((r) => r.status))
+const dutiesMeta = computed(() => st.value.dutiesMeta || null)
+const dutiesError = computed(() => st.value.dutiesError || '')
+const dutiesLoading = computed(() => Boolean(st.value.dutiesLoading))
+// Duties are known once the beacon answered, which `meta` proves - `duties` alone can't, since an
+// empty object is the correct answer for a set of keys that simply has nothing scheduled.
+const dutiesKnown = computed(() => Boolean(dutiesMeta.value))
+
+// Counted over `rows` (every key), never `visible` - the overview must not shrink as the user
+// filters, or the counts would only ever describe the current view.
+const dutyCounts = computed(() => countDuties(dutiesKnown.value ? rows.value : []))
+const upcomingProposals = computed(() => allProposals(rows.value))
+
+// The two duties have very different lookaheads and the column alone cannot say so: a blank
+// "Propose" cell means "not in the next ~6 minutes", not "nothing scheduled". The caption is
+// where that gets said, so the column is never read as a schedule it isn't.
+// The single most time-critical fact on the page, pulled out of the per-row pills: a proposal in
+// this epoch expires within minutes, and at 1000 keys nobody finds it by scrolling.
+const nextProposalNote = computed(() => {
+    const list = upcomingProposals.value
+    if (!list.length) return ''
+    const first = list[0]
+    const when = first.time == null ? `slot ${first.slot}` : formatTime(first.time, locales.value)
+    const more = list.length > 1 ? ` (+${list.length - 1} more this epoch)` : ''
+    return `Proposing: validator ${first.index} at ${when}${more}.`
+})
+
+const dutiesNote = computed(() => {
+    const m = dutiesMeta.value
+    if (!m) return ''
+    const parts = [`Proposals: epoch ${m.currentEpoch} only (the shuffling for later epochs does not exist yet)`]
+    if (m.syncNextOk && m.nextPeriodStartTime != null) {
+        parts.push(`sync period ${m.syncPeriod + 1} starts ${formatDateTime(m.nextPeriodStartTime, locales.value)}`)
+    } else if (!m.syncNextOk) {
+        parts.push('this beacon would not answer for the next sync period')
+    }
+    if (!m.specFromBeacon) parts.push('chain timings assumed (mainnet presets) - /config/spec was unreadable')
+    return parts.join(', ')
+})
 // Older client builds have no graffiti route. This must fail SAFE: only enable the action once
 // a settings read has actually proved the route exists. Defaulting to "supported" while unknown
 // would let a clear run against a routeless client, where the 404 that comes back is
@@ -393,6 +474,7 @@ const visible = computed(() => {
         if (chips.cred01 && r.withdrawalType !== '0x01') return false
         if (chips.feeSet && (!r.feeRecipient || r.feeRecipient === ZERO_ADDR)) return false
         if (chips.missingGraffiti && r.graffiti) return false
+        if (!matchesDutyChips(r, chips)) return false
         if (q) {
             return (r.pubkey || '').toLowerCase().includes(q) ||
                 String(r.index ?? '').includes(q) ||
@@ -483,10 +565,15 @@ function refresh() {
 }
 
 // On-chain holders (solo VC keys, Charon DV pubkeys) get beacon-state enrichment; shares don't.
-function enrich(h) {
+// Duties follow the state read rather than running beside it: they are keyed by validator index,
+// and the index is exactly what the state read supplies.
+async function enrich(h) {
     if (!h?.onChainStats) return
     const keys = state(h.service.id).keys
-    if (keys?.length) loadStates(h.service.id, keys.map((k) => k.pubkey), beaconUrl.value)
+    if (!keys?.length) return
+    await loadStates(h.service.id, keys.map((k) => k.pubkey), beaconUrl.value)
+    const indices = Object.values(state(h.service.id).states || {}).map((s) => s.index).filter((i) => i != null)
+    if (indices.length) loadDuties(h.service.id, indices, beaconUrl.value)
 }
 
 // Fee recipient + graffiti come from the client itself, so they load for any solo VC regardless
@@ -507,7 +594,10 @@ async function saveBeacon() {
 // changes underneath it, so the blanket selection is dropped and must be re-affirmed.
 function dropBlanketSelection() { allMatching.value = false }
 function setFilter(key) { if (key !== 'All' && !statusKnown.value) return; filter.value = key; page.value = 1; dropBlanketSelection() }
-function toggleChip(key) { if (!statusKnown.value) return; chips[key] = !chips[key]; page.value = 1; dropBlanketSelection() }
+// Duty chips gate on the duties read, the other chips on the states read - they are separate
+// requests and either can be unavailable while the other worked.
+function chipDisabled(key) { return key.startsWith('duty') ? !dutiesKnown.value : !statusKnown.value }
+function toggleChip(key) { if (chipDisabled(key)) return; chips[key] = !chips[key]; page.value = 1; dropBlanketSelection() }
 function setSize(s) { size.value = s; page.value = 1 }
 
 function toggleRow(pubkey) {
@@ -768,6 +858,17 @@ watch(() => props.active, (isActive) => {
 .chip:hover:not(.disabled) { background-color: var(--ev-c-gray-2); }
 .chip.on { background-color: var(--color-accent-soft); border-color: var(--color-accent); color: var(--color-accent); }
 .chip.disabled { opacity: 0.5; cursor: default; }
+
+.chip-sep { width: 1px; height: 18px; background-color: var(--ev-c-gray-2); margin: 0 var(--space-1); }
+.chip-duty { display: inline-flex; align-items: center; gap: 6px; }
+.chip-duty .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.chip-count { font-variant-numeric: tabular-nums; color: var(--ev-c-text-1); font-weight: 600; }
+/* A zero count still reads as part of the overview, so the chip stays - just quieter, and the
+   count keeps its weight so the row scans as a set of numbers. */
+.chip-duty.empty:not(.on) { opacity: 0.6; }
+.chip-duty.empty:not(.on) .chip-count { color: var(--ev-c-text-3); font-weight: 400; }
+
+.duty-lead { color: var(--color-warning); margin-right: var(--space-2); }
 
 .scopebar { display: flex; align-items: center; justify-content: space-between; gap: var(--space-4); padding: 10px 14px; border-bottom: 1px solid var(--ev-c-gray-3); flex-wrap: wrap; transition: background-color var(--transition-fast); }
 .scopebar.allkeys { background-color: var(--color-accent-wash); border-bottom-color: var(--color-accent-border); }

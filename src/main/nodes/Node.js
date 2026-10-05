@@ -28,6 +28,10 @@ import {
     deleteErrors, deleteNotFound, protectionCoversAll,
 } from "@main/nodes/keymanager";
 import { buildClusterLockReadCommand, parseClusterLock, isDvtService } from "@main/nodes/dvt";
+import {
+    buildChainContextScript, parseChainContext, buildDutiesScript, parseDuties,
+    dutiesByIndex, dutiesMeta,
+} from "@main/nodes/validatorDuties";
 import { validateInterchange } from "@main/nodes/slashingProtection";
 import {
     epochFromSlot, exitEligibility, parseSignedExit, exitBroadcastBody,
@@ -794,6 +798,60 @@ export class Node {
             return { ok: false, error: c > 0 ? `Beacon returned HTTP ${c}` : 'Beacon unreachable or timed out', states: {}, ...origin }
         }
         return { ok: true, states, ...origin }
+    }
+
+    /**
+     * Upcoming duties for a set of validator indices: sync-committee membership (this period and
+     * next) and block proposals (this epoch only). Read-only, and independent of which client holds
+     * the keys - duties are a property of the index on chain, so any reachable beacon answers.
+     *
+     * Two round trips, not one: the duties URLs need the current epoch and the period length, and
+     * both come from the first response. Neither is cached - a duties refresh is per-epoch at most,
+     * so a second exec costs less than a stale-spec bug would.
+     *
+     * @param {(number|string)[]} indices - validator indices; keys with no index are skipped
+     * @param {{ beaconUrl?: string }} opts - beaconUrl overrides the node's own beacon
+     * @returns {Promise<{ ok, duties: { [index]: object }, meta?: object, source?, base?, error? }>}
+     */
+    async getValidatorDuties(indices = [], { beaconUrl } = {}) {
+        const override = beaconUrl ? normalizeBeaconUrl(beaconUrl) : null
+        if (beaconUrl && !override) return { ok: false, error: 'Invalid beacon URL', duties: {} }
+        const resolved = override ? { base: override, source: 'custom' } : await this._resolveBeaconBase()
+        const { base, source } = resolved
+        if (!base) return { ok: false, error: NO_BEACON_ERROR, duties: {} }
+        const origin = { source, base }
+
+        const wanted = new Set((Array.isArray(indices) ? indices : [])
+            .filter((i) => i != null && Number.isFinite(Number(i)))
+            .map((i) => String(i)))
+        if (!wanted.size) return { ok: true, duties: {}, ...origin } // nothing on chain yet
+
+        const ctxRes = await this.sshService.exec(wrapSidecar(buildChainContextScript(base)), true, { timeoutMs: 30_000 })
+        const ctx = parseChainContext(ctxRes.stdout)
+        if (ctx.currentEpoch == null) {
+            const c = ctx.codes.find((x) => x > 0)
+            return { ok: false, error: c ? `Beacon returned HTTP ${c}` : 'Beacon unreachable or timed out', duties: {}, ...origin }
+        }
+
+        const script = buildDutiesScript(base, { currentEpoch: ctx.currentEpoch, epochsPerSyncPeriod: ctx.spec.epochsPerSyncPeriod })
+        const res = await this.sshService.exec(wrapSidecar(script), true, { timeoutMs: 30_000 })
+        const parsed = parseDuties(res.stdout)
+        if (parsed.codes.length && !parsed.codes.some((c) => c >= 200 && c < 300)) {
+            const c = parsed.codes[0]
+            return { ok: false, error: c > 0 ? `Beacon returned HTTP ${c}` : 'Beacon unreachable or timed out', duties: {}, ...origin }
+        }
+
+        const all = dutiesByIndex(parsed, { genesisTime: ctx.genesisTime, secondsPerSlot: ctx.spec.secondsPerSlot })
+        const duties = {}
+        for (const [index, d] of Object.entries(all)) if (wanted.has(index)) duties[index] = d
+        return {
+            ok: true,
+            duties,
+            // syncNextOk travels with the meta: a beacon that refused the next period must render as
+            // "not known yet", never as "not scheduled".
+            meta: { ...dutiesMeta({ currentEpoch: ctx.currentEpoch, spec: ctx.spec, genesisTime: ctx.genesisTime }), syncNextOk: parsed.syncNextOk },
+            ...origin,
+        }
     }
 
     /**

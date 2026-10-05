@@ -61,6 +61,28 @@ export function useValidatorKeys(nodeId) {
     }
 
     /**
+     * Load upcoming duties (sync-committee membership, this epoch's proposals) for the keys that
+     * already have an on-chain index - duties are keyed by validator index, so a key the beacon has
+     * no state for simply has none to report. Runs after `loadStates`, which is what supplies them.
+     */
+    async function loadDuties(serviceId, indices, beaconUrl) {
+        if (!serviceId || !indices?.length) return
+        cache[serviceId] = { ...(cache[serviceId] || { keys: [] }), dutiesLoading: true, dutiesError: '' }
+        try {
+            const res = await window.api.invoke('get-validator-duties', resolveNodeId(), indices, beaconUrl || null)
+            cache[serviceId] = {
+                ...cache[serviceId],
+                dutiesLoading: false,
+                duties: res?.ok ? (res.duties || {}) : (cache[serviceId].duties || {}),
+                dutiesMeta: res?.ok ? (res.meta || null) : (cache[serviceId].dutiesMeta || null),
+                dutiesError: res?.ok ? '' : (res?.error || 'Could not load duties'),
+            }
+        } catch (e) {
+            cache[serviceId] = { ...cache[serviceId], dutiesLoading: false, dutiesError: e?.message || 'Could not load duties' }
+        }
+    }
+
+    /**
      * Load per-key fee recipient + graffiti from the validator client's keymanager API.
      * Also records `graffitiSupported`: older client builds have no graffiti route, and the UI
      * hides the action rather than offering something that would 404.
@@ -85,5 +107,5 @@ export function useValidatorKeys(nodeId) {
 
     const state = (serviceId) => cache[serviceId] ?? { loading: false, keys: [], error: '' }
 
-    return { cache, load, loadStates, loadSettings, state }
+    return { cache, load, loadStates, loadDuties, loadSettings, state }
 }

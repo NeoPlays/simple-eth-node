@@ -126,6 +126,8 @@
 
 <script setup>
 import { computed, ref } from 'vue'
+import { formatNumber } from '@renderer/utils/datetime'
+import { useLocale } from '@renderer/composables/useLocale'
 import SetupGroups from './SetupGroups.vue'
 
 const props = defineProps({
@@ -138,6 +140,7 @@ const props = defineProps({
     diskError: { type: String, default: null },
 })
 
+const { locales } = useLocale()
 const hovered = ref(null)
 
 // Categorical palette (base.css --chart-N), assigned by slot, never cycled - 7th+ reuses the last slot.
@@ -206,8 +209,8 @@ function headLabel(m) {
     const noun = m.role === 'execution' ? 'block' : 'slot'
     // Denominator: EL = eth_syncing highestBlock, CL-via-Prometheus = wall-clock target slot; only while syncing.
     const denom = m.role === 'execution' ? m.target : (m.source === 'prometheus' ? m.clock : null)
-    if (denom != null) return `${noun} ${m.head.toLocaleString()} / ${denom.toLocaleString()}`
-    return `${noun} ${m.head.toLocaleString()}`
+    if (denom != null) return `${noun} ${formatNumber(m.head, locales.value)} / ${formatNumber(denom, locales.value)}`
+    return `${noun} ${formatNumber(m.head, locales.value)}`
 }
 
 // Where the sync figure came from (only set for consensus clients).

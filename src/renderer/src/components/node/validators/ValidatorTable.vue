@@ -13,6 +13,7 @@
             <div class="cell">Status</div>
             <div class="cell cell-right">Balance</div>
             <div class="cell">Withdrawal</div>
+            <div class="cell">Duties</div>
             <div class="cell cell-right">Actions</div>
         </div>
 
@@ -42,7 +43,18 @@
                 <div class="cell cell-right cell-balance mono" :class="{ muted: !statsApplicable }">{{ !statsApplicable ? 'n/a' : (row.balance != null ? Number(row.balance).toFixed(3) : '-') }}</div>
                 <div class="cell cell-withdrawal">
                     <span v-if="statsApplicable && row.withdrawalType" class="wpill mono" :class="{ warn: row.withdrawalType === '0x01' || row.withdrawalType === '0x00' }">{{ row.withdrawalType }}</span>
-                    <span v-else class="mono muted">{{ statsApplicable ? '—' : 'n/a' }}</span>
+                    <span v-else class="mono muted">{{ statsApplicable ? '-' : 'n/a' }}</span>
+                </div>
+                <div class="cell cell-duties">
+                    <template v-if="statsApplicable && row.duty">
+                        <span v-if="row.duty.proposals.length" class="dpill propose" :title="proposalTitle(row.duty.proposals)">
+                            Propose{{ row.duty.proposals.length > 1 ? ` x${row.duty.proposals.length}` : '' }}
+                        </span>
+                        <span v-if="row.duty.syncCurrent" class="dpill sync" title="In the current sync committee">Sync</span>
+                        <span v-if="row.duty.syncNext" class="dpill syncnext" :title="syncNextTitle">Sync next</span>
+                        <span v-if="!row.duty.proposals.length && !row.duty.syncCurrent && !row.duty.syncNext" class="mono muted">-</span>
+                    </template>
+                    <span v-else class="mono muted">{{ statsApplicable ? '-' : 'n/a' }}</span>
                 </div>
                 <div class="cell cell-right cell-actions" @click.stop>
                     <button class="iconbtn" title="Copy pubkey" @click="emit('copy', row)">
@@ -101,8 +113,10 @@
 </template>
 
 <script setup>
-import { ref, watch, onUnmounted } from 'vue'
+import { ref, computed, watch, onUnmounted } from 'vue'
 import { actionDisabled, actionHint } from '@renderer/utils/validatorCapabilities'
+import { formatDateTime, formatTime } from '@renderer/utils/datetime'
+import { useLocale } from '@renderer/composables/useLocale'
 
 const props = defineProps({
     rows: { type: Array, default: () => [] },
@@ -117,9 +131,11 @@ const props = defineProps({
     pages: { type: Number, default: 1 },
     size: { type: Number, default: 25 },
     rangeLabel: { type: String, default: '' },
+    dutiesMeta: { type: Object, default: null },
 })
 const emit = defineEmits(['rowClick', 'toggle', 'toggleAll', 'copy', 'explorer', 'menuAction', 'update:size', 'prev', 'next'])
 
+const { locales } = useLocale()
 const SIZES = [25, 50, 100]
 const STATUS_COLOR = { Active: 'var(--color-success)', Pending: 'var(--color-warning)', Exited: 'var(--ev-c-text-3)', Slashed: 'var(--color-danger)' }
 const STATUS_LABEL = { Active: 'Active', Pending: 'Pending', Exited: 'Exited', Slashed: 'Slashed' }
@@ -127,6 +143,21 @@ const STATUS_LABEL = { Active: 'Active', Pending: 'Pending', Exited: 'Exited', S
 function shortKey(pubkey) {
     return pubkey && pubkey.length > 20 ? `${pubkey.slice(0, 10)}…${pubkey.slice(-8)}` : pubkey
 }
+/** Local wall-clock for a duty slot; falls back to the slot number when genesis time is unknown. */
+function slotLabel(p) {
+    return p.time == null ? `slot ${p.slot}` : `slot ${p.slot} at ${formatTime(p.time, locales.value)}`
+}
+function proposalTitle(proposals) {
+    return `Block proposal this epoch - ${proposals.map(slotLabel).join(', ')}`
+}
+// The next period's committee is only "known" if the beacon actually answered for it; a refusal
+// must not render as a scheduled duty, and the empty pill already covers "not in it".
+const syncNextTitle = computed(() => {
+    const t = props.dutiesMeta?.nextPeriodStartTime
+    return t == null
+        ? 'In the next sync committee'
+        : `In the next sync committee, from ${formatDateTime(t, locales.value)}`
+})
 function gateCtx() {
     return { row: menuRow.value, soloEligible: props.soloEligible, graffitiSupported: props.graffitiSupported }
 }
@@ -172,7 +203,7 @@ onUnmounted(closeMenu)
 
 .vrow {
     display: grid;
-    grid-template-columns: 38px 84px minmax(0, 1fr) 120px 118px 138px 96px;
+    grid-template-columns: 38px 84px minmax(0, 1fr) 120px 118px 110px 150px 96px;
     align-items: center;
 }
 .vhead {
@@ -227,6 +258,20 @@ onUnmounted(closeMenu)
     color: var(--ev-c-text-2);
 }
 .wpill.warn { color: var(--color-warning); }
+
+.cell-duties { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+.dpill {
+    font-size: var(--font-size-meta);
+    padding: var(--chip-padding);
+    border-radius: var(--radius-sm);
+    background-color: var(--ev-c-gray-3);
+    color: var(--ev-c-text-2);
+    white-space: nowrap;
+}
+/* Proposal is the time-critical one (it expires this epoch), so it is the only one that alerts. */
+.dpill.propose { color: var(--color-warning); font-weight: 600; }
+.dpill.sync { color: var(--color-accent); }
+.dpill.syncnext { color: var(--ev-c-text-3); }
 
 .iconbtn {
     width: 26px; height: 26px;
