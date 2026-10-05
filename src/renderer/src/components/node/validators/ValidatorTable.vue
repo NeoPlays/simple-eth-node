@@ -33,9 +33,8 @@
                 </div>
                 <div class="cell cell-index mono">{{ row.index ?? '-' }}</div>
                 <div class="cell cell-key mono">
-                    {{ shortKey(row.pubkey) }}
-                    <!-- Behind a remote Charon, a share whose distributed validator could not be resolved. -->
-                    <span v-if="row.share && !row.dvKnown" class="key-tag" title="This operator's key share; the distributed validator's own pubkey could not be looked up">key share</span>
+                    <span v-if="row.pubkeyUnknown" class="key-unknown" title="The public key could not be looked up; the stats come from Charon by validator index">unknown</span>
+                    <template v-else>{{ shortKey(row.pubkey) }}</template>
                 </div>
                 <div class="cell cell-status">
                     <template v-if="statsApplicable">
@@ -237,15 +236,7 @@ onUnmounted(closeMenu)
 .cell-check { display: flex; align-items: center; justify-content: center; }
 .cell-index { color: var(--ev-c-text-3); overflow: visible; text-overflow: clip; }
 .cell-key { color: var(--ev-c-text-1); }
-.key-tag {
-    margin-left: var(--space-2);
-    padding: var(--chip-padding);
-    border-radius: var(--radius-sm);
-    font-family: var(--font-sans);
-    font-size: var(--font-size-micro);
-    color: var(--ev-c-text-2);
-    background-color: var(--ev-c-gray-3);
-}
+.key-unknown { font-family: var(--font-sans); color: var(--ev-c-text-3); font-style: italic; }
 .cell-status { display: flex; align-items: center; gap: var(--space-2); }
 .cell-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }

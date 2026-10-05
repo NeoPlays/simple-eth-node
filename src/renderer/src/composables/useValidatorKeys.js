@@ -61,39 +61,51 @@ export function useValidatorKeys(nodeId) {
     }
 
     /**
-     * Stats for a validator client behind a (remote) DVT client. Its keys are key shares; the main
-     * process asks Charon with them (stats of the distributed validator they belong to) and looks
-     * up each distributed validator's own pubkey by index on a real beacon. Rows then show the DV
-     * pubkey with the share kept alongside; where no beacon could resolve it, the share stays the
-     * row's key (`dvKnown: false`) so nothing is presented as a pubkey it is not.
+     * The distributed validators behind a validator client that signs through a DVT client on
+     * another machine - the content of that Charon's own tab, cached under `cacheId`. There is no
+     * cluster-lock.json here, so they are derived from the client's key shares: the main process
+     * asks Charon with the shares (stats of the DV each belongs to) and looks up each DV's own pubkey
+     * by index (a real beacon, or Charon's own passthrough). Every share with an on-chain validator
+     * becomes a row, its stats from Charon; when the DV pubkey could not be resolved the row is
+     * keyed `index:<n>` with `pubkeyUnknown` - a share is never shown as if it were the DV pubkey.
+     * `unresolved` lists shares with no on-chain validator yet, and `dvByShare` lets the client's
+     * own "key shares" tab point each share at its DV.
      */
-    async function loadDvtStates(serviceId, beaconUrl) {
-        const entry = cache[serviceId]
-        if (!serviceId || !entry?.keys?.length) return
-        const shares = entry.keys.map((k) => k.share ?? k.pubkey)
-        cache[serviceId] = { ...entry, statesLoading: true, statesError: '' }
+    async function loadRemoteDvt(cacheId, vcServiceId, beaconUrl) {
+        if (!cacheId || !vcServiceId) return
+        const prev = cache[cacheId] || {}
+        cache[cacheId] = { ...prev, loading: true, keys: prev.keys || [], error: '', statesLoading: true }
+        const fail = (error, extra = {}) => {
+            cache[cacheId] = { ...cache[cacheId], loading: false, statesLoading: false, keys: [], error, ...extra }
+        }
         try {
-            const res = await window.api.invoke('get-dvt-validator-states', resolveNodeId(), serviceId, shares, beaconUrl || null)
-            if (!res?.ok) {
-                cache[serviceId] = { ...cache[serviceId], statesLoading: false, statesError: res?.error || 'Could not load validator stats', dvt: res?.dvt ?? null }
-                return
-            }
-            const dvByShare = res.dvByShare || {}
+            const list = await window.api.invoke('list-validators', resolveNodeId(), vcServiceId)
+            if (!list?.ok) return fail(list?.error || 'Could not read the key shares from the validator client')
+            const shares = (list.keys || []).map((k) => String(k.pubkey))
+            const res = await window.api.invoke('get-dvt-validator-states', resolveNodeId(), vcServiceId, shares, beaconUrl || null)
+            if (!res?.ok) return fail(res?.error || 'Could not load the distributed validators', { dvt: res?.dvt ?? null })
+
+            const dvByShare = {}
+            for (const [share, dv] of Object.entries(res.dvByShare || {})) dvByShare[share.toLowerCase()] = dv
+            const keys = []
             const states = {}
-            const keys = cache[serviceId].keys.map((k) => {
-                const share = String(k.share ?? k.pubkey)
-                const dv = dvByShare[share.toLowerCase()] || dvByShare[share] || null
-                const shown = dv || share
-                const s = res.states?.[share.toLowerCase()]
-                if (s) states[shown.toLowerCase()] = { ...s, pubkey: shown.toLowerCase() }
-                return { ...k, pubkey: shown, share, dvKnown: Boolean(dv) }
-            })
-            cache[serviceId] = {
-                ...cache[serviceId], keys, states, statesLoading: false, statesError: '',
+            const unresolved = []
+            for (const share of shares) {
+                const lower = share.toLowerCase()
+                const s = res.states?.[lower]
+                const dv = dvByShare[lower]
+                if (s?.index == null) { unresolved.push({ share }); continue }
+                const id = dv || `index:${s.index}`
+                keys.push({ pubkey: id, readonly: true, share, pubkeyUnknown: !dv })
+                states[id.toLowerCase()] = { ...s, pubkey: id.toLowerCase() }
+            }
+            cache[cacheId] = {
+                ...cache[cacheId], loading: false, statesLoading: false, error: '', statesError: '',
+                keys, states, unresolved, dvByShare,
                 statesSource: res.source, statesBase: res.base, dvt: res.dvt, dvtLookupError: res.lookupError || '',
             }
         } catch (e) {
-            cache[serviceId] = { ...cache[serviceId], statesLoading: false, statesError: e?.message || 'Could not load validator stats' }
+            fail(e?.message || 'Could not load the distributed validators')
         }
     }
 
@@ -144,5 +156,5 @@ export function useValidatorKeys(nodeId) {
 
     const state = (serviceId) => cache[serviceId] ?? { loading: false, keys: [], error: '' }
 
-    return { cache, load, loadStates, loadDvtStates, loadDuties, loadSettings, state }
+    return { cache, load, loadStates, loadRemoteDvt, loadDuties, loadSettings, state }
 }

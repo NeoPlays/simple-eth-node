@@ -10,6 +10,9 @@ import {
     buildBeaconValidatorsScript,
     parseBeaconStates,
     configuredBeaconBases,
+    buildValidatorIdentitiesScript,
+    parseValidatorIdentities,
+    VALIDATOR_IDENTITIES_PATH,
 } from '@main/nodes/beaconValidators'
 
 describe('normalizeBeaconUrl', () => {
@@ -194,5 +197,26 @@ describe('configuredBeaconBases', () => {
             svc('v4', 'GethService', ['--http']),
             { id: 'v5' },
         ])).toEqual(['http://remote:5052'])
+    })
+})
+
+// Asked through Charon, this route reaches the beacon behind it untouched, so it returns the
+// distributed validators' real pubkeys (Charon rewrites them on its own validators route).
+describe('validator identities (index -> pubkey)', () => {
+    it('POSTs a bare JSON array of indices, chunked, with an HTTP code per chunk', () => {
+        const s = buildValidatorIdentitiesScript('http://10.0.0.5:3600', ['42', '7', 'nope'])
+        expect(s).toContain(`-X POST 'http://10.0.0.5:3600${VALIDATOR_IDENTITIES_PATH}'`)
+        expect(s).toContain(`-d '["42","7"]'`)
+        expect(buildValidatorIdentitiesScript('http://b', ['x'])).toBeNull()
+        const chunked = buildValidatorIdentitiesScript('http://b', ['1', '2', '3'], { chunkSize: 2 })
+        expect(chunked.match(/validator_identities/g)).toHaveLength(2)
+    })
+    it('parses pubkeys by index and keeps the per-chunk codes', () => {
+        const pk = '0x' + 'D'.repeat(96)
+        const out = `{"data":[{"index":"42","pubkey":"${pk}","activation_epoch":"0"}]}\n===VSTATE_HTTP===200\n===VID_CHUNK===\n` +
+            `{"code":405}\n===VSTATE_HTTP===405\n===VID_CHUNK===\n`
+        const r = parseValidatorIdentities(out)
+        expect(r.byPubkey).toEqual({ [pk.toLowerCase()]: { index: 42 } })
+        expect(r.codes).toEqual([200, 405])
     })
 })

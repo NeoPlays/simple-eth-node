@@ -115,6 +115,56 @@ export function parseBeaconStates(stdout) {
     return { states, codes }
 }
 
+// ── validator identities (index -> pubkey) ──────────────────────────────────────────────────
+//
+// `POST /eth/v1/beacon/states/{state_id}/validator_identities` (beacon-APIs, body: a bare JSON array
+// of ids) answers with just `{ index, pubkey, activation_epoch }` per validator. Charon does not
+// intercept this route - its router hands every path it does not own to the upstream beacon
+// unchanged (charon core/validatorapi/router.go, `PathPrefix("/").Handler(proxy)`) - so asked
+// THROUGH Charon it returns the distributed validators' real pubkeys, which Charon's own validators
+// route always rewrites to the operator's shares.
+export const VALIDATOR_IDENTITIES_PATH = '/eth/v1/beacon/states/head/validator_identities'
+export const IDENTITIES_CHUNK_MARKER = '===VID_CHUNK==='
+
+/** Sidecar script POSTing validator indices (chunked) to validator_identities, HTTP code per chunk. */
+export function buildValidatorIdentitiesScript(base, indices, { chunkSize = 500 } = {}) {
+    if (!base) return null
+    const ids = (Array.isArray(indices) ? indices : []).map(String).filter((i) => INDEX.test(i))
+    if (!ids.length) return null
+    const curls = []
+    for (let i = 0; i < ids.length; i += chunkSize) {
+        const body = `[${ids.slice(i, i + chunkSize).map((x) => `"${x}"`).join(',')}]`
+        curls.push(`curl -sS -m ${REQUEST_TIMEOUT_S} -X POST '${base}${VALIDATOR_IDENTITIES_PATH}' -H 'Content-Type: application/json' -d '${body}' -w '\\n${HTTP_MARKER}%{http_code}' ; printf '\\n${IDENTITIES_CHUNK_MARKER}\\n'`)
+    }
+    return curls.join(' ; ')
+}
+
+/**
+ * `{ byPubkey: { [pubkey]: { index } }, codes }` - the same shape as parseBeaconStates' states, so
+ * `mapSharesToDv` takes either. A beacon too old for the route answers 404/405 per chunk.
+ */
+export function parseValidatorIdentities(stdout) {
+    const byPubkey = {}
+    const codes = []
+    for (const part of String(stdout ?? '').split(IDENTITIES_CHUNK_MARKER)) {
+        if (!part.trim()) continue
+        let body = part
+        const hi = part.indexOf(HTTP_MARKER)
+        if (hi !== -1) {
+            body = part.slice(0, hi)
+            const m = part.slice(hi + HTTP_MARKER.length).match(/\d{3}/)
+            if (m) codes.push(parseInt(m[0], 10))
+        }
+        let json
+        try { json = JSON.parse(body.trim()) } catch { continue }
+        for (const v of Array.isArray(json?.data) ? json.data : []) {
+            const pubkey = String(v?.pubkey || '').toLowerCase()
+            if (HEX_PUBKEY.test(pubkey) && v?.index != null) byPubkey[pubkey] = { index: Number(v.index) }
+        }
+    }
+    return { byPubkey, codes }
+}
+
 // Command flags carrying the beacon REST endpoint a client talks to. Names taken from upstream
 // stereum's `*ValidatorService.js`, which wrote these configs. Prysm's `--beacon-rpc-provider`
 // is excluded: same value as the REST flag, but gRPC cannot answer a REST query.

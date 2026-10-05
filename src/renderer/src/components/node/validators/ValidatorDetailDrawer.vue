@@ -16,11 +16,16 @@
                 </header>
 
                 <div class="drawer-body">
-                    <div class="pubkey-block mono" @click="copy(validator.pubkey)" :title="'Click to copy'">{{ validator.pubkey }}</div>
+                    <div v-if="validator.pubkeyUnknown" class="pubkey-block">Public key unknown: it could not be looked up, so only the stats Charon reports by index are shown.</div>
+                    <div v-else class="pubkey-block mono" @click="copy(validator.pubkey)" :title="'Click to copy'">{{ validator.pubkey }}</div>
 
                     <div class="facts">
-                        <div v-if="validator.share && validator.share !== validator.pubkey" class="fact">
+                        <!-- Remote Charon: a DV names this operator's share, a share names its DV. -->
+                        <div v-if="validator.share" class="fact wide">
                             <span class="fact-label">Key share (this operator)</span><span class="fact-value mono">{{ validator.share }}</span>
+                        </div>
+                        <div v-if="validator.dvPubkey" class="fact wide">
+                            <span class="fact-label">Distributed validator</span><span class="fact-value mono">{{ validator.dvPubkey }}</span>
                         </div>
                         <div class="fact"><span class="fact-label">Balance</span><span class="fact-value mono">{{ eth(validator.balance) }}</span></div>
                         <div class="fact"><span class="fact-label">Effective balance</span><span class="fact-value mono">{{ eth(validator.effectiveBalance) }}</span></div>
@@ -164,6 +169,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 }
 .fact-label { font-size: var(--font-size-meta); text-transform: uppercase; letter-spacing: 0.05em; color: var(--ev-c-text-3); }
 .fact-value { font-size: var(--font-size-secondary); color: var(--ev-c-text-1); word-break: break-all; }
+/* A full 98-char pubkey needs the whole row, not half the grid. */
+.fact.wide { grid-column: 1 / -1; }
 
 .drawer-actions { display: flex; flex-direction: column; gap: var(--space-2); }
 .drawer-actions .eyebrow { margin-bottom: var(--space-1); }

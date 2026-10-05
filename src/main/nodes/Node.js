@@ -10,7 +10,7 @@ import {
 } from "@main/nodes/metrics";
 import {
     normalizeBeaconUrl, buildBeaconValidatorsScript, parseBeaconStates, configuredBeaconBases,
-    BEACON_ENDPOINT_FLAGS,
+    BEACON_ENDPOINT_FLAGS, buildValidatorIdentitiesScript, parseValidatorIdentities,
 } from "@main/nodes/beaconValidators";
 import {
     isResyncable, resolveDataDir, isSafeDataDir, updateSyncCommand, supportsCheckpointSync,
@@ -534,9 +534,11 @@ export class Node {
      * client. Its keys are key shares, which have no beacon state of their own:
      *  1. Charon is asked with the shares; it maps each to its distributed validator and answers
      *     with that validator's index/status/balance - but with the pubkey rewritten back to the share.
-     *  2. The distributed validator's own pubkey is then looked up BY INDEX on a real beacon: the
-     *     stats-beacon override, else this node's running consensus client, else a non-DVT endpoint
-     *     the validator client also lists. Without one, stats still show, keyed by share.
+     *  2. The distributed validator's own pubkey is then looked up BY INDEX: on a real beacon when one
+     *     is at hand (stats-beacon override, this node's running consensus client, a non-DVT endpoint
+     *     the validator client also lists), else through the DVT client itself via
+     *     `validator_identities`, a route Charon passes to its beacon untouched (beaconValidators.js).
+     *     Without either, stats still show and the rows just lack the DV pubkey.
      * @returns {Promise<{ ok, states: { [share]: object }, dvByShare: { [share]: string }, source, base, lookupError?, dvt, error? }>}
      */
     async getDvtValidatorStates(serviceId, shares = [], { beaconUrl } = {}) {
@@ -554,27 +556,36 @@ export class Node {
             return { ok: false, error: c > 0 ? `${name} returned HTTP ${c}` : `${name} at ${b.endpoint} is unreachable or timed out`, states: {}, dvByShare: {}, dvt }
         }
 
-        const override = beaconUrl ? normalizeBeaconUrl(beaconUrl) : null
-        let target = override ? { base: override, source: 'custom' } : null
-        if (!target) {
-            const own = await this._resolveBeaconBase()
-            if (own.source === 'node') target = own
-        }
-        if (!target && b.beacons.length) target = { base: b.beacons[0], source: 'validator-config' }
-
         const indices = Object.values(states).map((s) => s.index).filter((i) => i != null).map(String)
+        const ok2xx = (codes) => !codes.length || codes.some((c) => c >= 200 && c < 300)
+        // Real beacons first (they answer the classic validators route), then the DVT client's own
+        // passthrough, which only needs the beacon behind it to know validator_identities.
+        const targets = []
+        const override = beaconUrl ? normalizeBeaconUrl(beaconUrl) : null
+        if (override) targets.push({ base: override, source: 'custom' })
+        const own = override ? null : await this._resolveBeaconBase()
+        if (own?.source === 'node') targets.push(own)
+        if (!override && b.beacons.length) targets.push({ base: b.beacons[0], source: 'validator-config' })
+        targets.push({ base: b.endpoint, source: 'dvt-passthrough', identities: true })
+
         let dvByShare = {}
-        let lookupError = null
-        if (target && indices.length) {
-            const res2 = await this.sshService.exec(wrapSidecar(buildBeaconValidatorsScript(target.base, indices)), true, { timeoutMs: 30_000 })
-            const looked = parseBeaconStates(res2.stdout)
-            if (looked.codes.length && !looked.codes.some((c) => c >= 200 && c < 300)) {
-                lookupError = `Could not look up the distributed validator keys on ${target.base}`
-            } else {
-                dvByShare = mapSharesToDv(states, looked.states)
+        let used = null
+        if (indices.length) {
+            for (const t of targets) {
+                const script = t.identities
+                    ? buildValidatorIdentitiesScript(t.base, indices)
+                    : buildBeaconValidatorsScript(t.base, indices)
+                const r = await this.sshService.exec(wrapSidecar(script), true, { timeoutMs: 30_000 })
+                const parsed = t.identities ? parseValidatorIdentities(r.stdout) : parseBeaconStates(r.stdout)
+                if (!ok2xx(parsed.codes)) continue
+                dvByShare = mapSharesToDv(states, t.identities ? parsed.byPubkey : parsed.states)
+                if (Object.keys(dvByShare).length) { used = t; break }
             }
         }
-        return { ok: true, states, dvByShare, source: target?.source ?? null, base: target?.base ?? null, lookupError, dvt }
+        const lookupError = indices.length && !used
+            ? `Could not look up the distributed validators' public keys (the beacon behind ${b.client === 'pluto' ? 'Pluto' : 'Charon'} may not support validator_identities)`
+            : null
+        return { ok: true, states, dvByShare, source: used?.source ?? null, base: used?.base ?? null, lookupError, dvt }
     }
 
     /**

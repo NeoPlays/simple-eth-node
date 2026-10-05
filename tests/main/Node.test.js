@@ -1156,16 +1156,37 @@ describe('Node', () => {
             expect(lookup).toContain('"ids":["42"]')
         })
 
-        it('still returns Charon-sourced stats when no real beacon can resolve the pubkeys', async () => {
+        it('without a real beacon, reads the DV pubkeys through Charon via validator_identities', async () => {
             node._dvtBackends = { vc: { client: 'charon', endpoint: 'http://10.0.0.5:3600', version: 'x', detectedBy: 'version', beacons: [] } }
             vi.spyOn(node, '_resolveBeaconBase').mockResolvedValue({ base: 'http://10.0.0.5:3600', source: 'validator-config' })
             const viaCharon = JSON.stringify({ data: [{ index: '42', status: 'active_ongoing', validator: { pubkey: SHARE } }] })
-            node.sshService.exec.mockResolvedValue(ok(`${viaCharon}\n===VSTATE_HTTP===200\n===VSTATE_CHUNK===\n`))
+            const identities = JSON.stringify({ data: [{ index: '42', pubkey: DV, activation_epoch: '0' }] })
+            node.sshService.exec.mockImplementation(async (cmd) => {
+                if (cmd.includes('validator_identities')) return ok(`${identities}\n===VSTATE_HTTP===200\n===VID_CHUNK===\n`)
+                return ok(`${viaCharon}\n===VSTATE_HTTP===200\n===VSTATE_CHUNK===\n`)
+            })
             const r = await node.getDvtValidatorStates('vc', [SHARE])
             expect(r.ok).toBe(true)
+            expect(r.dvByShare).toEqual({ [SHARE]: DV })
+            expect(r.source).toBe('dvt-passthrough')
+            expect(r.base).toBe('http://10.0.0.5:3600')
+            const call = node.sshService.exec.mock.calls.map((c) => c[0]).find((c) => c.includes('validator_identities'))
+            expect(call).toContain('["42"]') // the sidecar wrapper escapes the surrounding quotes
+        })
+
+        it('keeps the Charon stats and reports why when no route can resolve the pubkeys', async () => {
+            node._dvtBackends = { vc: { client: 'charon', endpoint: 'http://10.0.0.5:3600', version: 'x', detectedBy: 'version', beacons: [] } }
+            vi.spyOn(node, '_resolveBeaconBase').mockResolvedValue({ base: 'http://10.0.0.5:3600', source: 'validator-config' })
+            const viaCharon = JSON.stringify({ data: [{ index: '42', status: 'active_ongoing', validator: { pubkey: SHARE } }] })
+            node.sshService.exec.mockImplementation(async (cmd) => {
+                if (cmd.includes('validator_identities')) return ok(`{"code":404}\n===VSTATE_HTTP===404\n===VID_CHUNK===\n`)
+                return ok(`${viaCharon}\n===VSTATE_HTTP===200\n===VSTATE_CHUNK===\n`)
+            })
+            const r = await node.getDvtValidatorStates('vc', [SHARE])
+            expect(r.ok).toBe(true)
+            expect(r.states[SHARE]).toMatchObject({ index: 42, status: 'Active' })
             expect(r.dvByShare).toEqual({})
-            expect(r.source).toBeNull()
-            expect(node.sshService.exec).toHaveBeenCalledTimes(1)
+            expect(r.lookupError).toMatch(/validator_identities/)
         })
     })
 
