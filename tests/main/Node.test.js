@@ -227,6 +227,64 @@ describe('Node', () => {
         })
     })
 
+    describe('update settings', () => {
+        const FILE = 'stereum_settings:\n  settings:\n    controls_install_path: /opt/stereum\n    arch: x86_64\n    updates:\n      lane: stable\n      unattended:\n        install: true\n        interval_days: 1\n        hour: 0\n        min: 26\n'
+        const CRON = '#Ansible: stereum auto unattended update\n26 0 */1 * * cd x && ./unattended-update.sh\n'
+        const stateOut = (file = FILE, cron = CRON) =>
+            ['===UPD_YAML===', file, '===UPD_CRON===', cron, '===UPD_TIME===', '1759672800 +0200', '===UPD_TZ===', 'Europe/Vienna'].join('\n')
+
+        it('getUpdateSettings reads everything in one sudo exec and refreshes the settings cache', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok(stateOut()))
+            const s = await node.getUpdateSettings()
+            expect(node.sshService.exec).toHaveBeenCalledTimes(1)
+            expect(node.sshService.exec.mock.calls[0][0]).toMatch(/^sh -c '/)
+            expect(node.sshService.exec.mock.calls[0][1]).toBe(true)
+            expect(s.drift).toBe('ok')
+            expect(s.updates.unattended.min).toBe(26)
+            expect(s).not.toHaveProperty('settings') // the raw file stays in the main process
+            expect(node.settings.stereum_settings.settings.controls_install_path).toBe('/opt/stereum')
+        })
+
+        it('setUpdateSettings re-reads, writes atomically, then runs configure-updates', async () => {
+            const calls = []
+            node.sshService.exec.mockImplementation((cmd) => {
+                calls.push(cmd)
+                if (cmd === 'cat /etc/stereum/stereum.yaml') return Promise.resolve(ok(FILE))
+                if (cmd.includes('===UPD_YAML===')) return Promise.resolve(ok(stateOut()))
+                return Promise.resolve(ok(''))
+            })
+            await node.setUpdateSettings({ unattended: { interval_days: 7, hour: 3, min: 0 } })
+
+            expect(calls[0]).toBe('cat /etc/stereum/stereum.yaml')
+            const write = calls[1]
+            expect(write).toContain('base64 -d > /etc/stereum/stereum.yaml.tmp')
+            expect(write).toContain('mv /etc/stereum/stereum.yaml.tmp /etc/stereum/stereum.yaml')
+            const b64 = write.match(/^echo '([^']+)'/)[1]
+            const written = Buffer.from(b64, 'base64').toString()
+            expect(written).toContain('controls_install_path: /opt/stereum')
+            expect(written).toContain('interval_days: 7')
+            expect(written).toContain('lane: stable')
+            expect(calls[2]).toContain('"stereum_role":"configure-updates"')
+            expect(calls.at(-1)).toContain('===UPD_YAML===')
+        })
+
+        it('setUpdateSettings rejects an invalid patch before touching the node', async () => {
+            await expect(node.setUpdateSettings({ unattended: { hour: 25 } })).rejects.toThrow(/hour/)
+            expect(node.sshService.exec).not.toHaveBeenCalled()
+        })
+
+        it('setUpdateSettings refuses to rewrite a file without controls_install_path', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok('stereum_settings:\n  settings: {}\n'))
+            await expect(node.setUpdateSettings({ lane: 'dev' })).rejects.toThrow(/refusing/)
+            expect(node.sshService.exec).toHaveBeenCalledTimes(1)
+        })
+
+        it('writeStereumSettings throws when the write fails', async () => {
+            node.sshService.exec.mockResolvedValueOnce(fail('read-only file system'))
+            await expect(node.writeStereumSettings({ a: 1 })).rejects.toThrow('read-only file system')
+        })
+    })
+
     describe('fetchServiceConfigs', () => {
         it('populates config on each service in parallel', async () => {
             node.services = [{ id: 'a' }, { id: 'b' }]

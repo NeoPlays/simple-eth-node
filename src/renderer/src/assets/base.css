@@ -53,6 +53,7 @@
     --color-danger-border: rgba(224, 108, 117, 0.30);   /* destructive-button outline */
     --scrim:               rgba(6, 7, 8, 0.55);          /* drawer + dialog overlay */
     --shadow-menu:         0 18px 40px rgba(0, 0, 0, 0.55); /* floating row-action menu */
+    --native-color-scheme: dark;    /* `color-scheme` for native controls (time picker icon, etc.) */
 
     /* Categorical chart palette - for encoding distinct entities (e.g. per-service
        disk segments). Fixed order, assigned by slot, never cycled. Validated for
@@ -153,6 +154,7 @@
     --color-danger-border: rgba(239, 115, 99, 0.32);
     --scrim:               rgba(15, 17, 20, 0.35);
     --shadow-menu:         0 18px 40px rgba(0, 0, 0, 0.18);
+    --native-color-scheme: light;
 
     /* Light-mode categorical steps - same hues stepped for the light surface. */
     --chart-1: #2a78d6;

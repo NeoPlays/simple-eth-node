@@ -32,32 +32,44 @@ const NODE_TASK_ACTIONS = {
     'update-services':          { label: () => 'Update services',        run: (node, [ids = null]) => node.updateServices(ids) },
     'update-stereum':           { label: () => 'Update node controls',   run: (node, [commit = null]) => node.updateStereum(commit) },
     'run-full-update':          { label: () => 'Full update',            run: (node, [commit = null, prune = true]) => node.runFullUpdate(commit, { prune }) },
+    'set-update-settings':      { label: () => 'Change update settings', run: (node, [patch]) => node.setUpdateSettings(patch) },
+    'apply-update-schedule':    { label: () => 'Apply update schedule',  run: (node) => node.applyUpdateSchedule() },
 }
 
-const UPDATES_MANIFEST_URL = 'https://stereum.com/downloads/updates.json'
+// One manifest per release channel, as the launcher's NodeUpdates.checkUpdates picks it: a node on
+// the dev lane is updated from updates.dev.json, so comparing it against the stable list would
+// report the wrong "latest" for every service.
+const UPDATES_MANIFEST_URLS = {
+    stable: 'https://stereum.com/downloads/updates.json',
+    dev: 'https://stereum.com/downloads/updates.dev.json',
+}
 const UPDATES_MANIFEST_TTL_MS = 5 * 60 * 1000
-let _manifestCache = null
+const _manifestCache = new Map() // lane -> { data, fetchedAt }
 
-function fetchUpdatesManifest() {
-    if (_manifestCache && Date.now() - _manifestCache.fetchedAt < UPDATES_MANIFEST_TTL_MS) {
-        return Promise.resolve(_manifestCache.data)
+function fetchUpdatesManifest(lane = 'stable') {
+    const key = UPDATES_MANIFEST_URLS[lane] ? lane : 'stable'
+    const cached = _manifestCache.get(key)
+    if (cached && Date.now() - cached.fetchedAt < UPDATES_MANIFEST_TTL_MS) {
+        return Promise.resolve(cached.data)
     }
+    const url = UPDATES_MANIFEST_URLS[key]
+    const name = url.split('/').pop()
     return new Promise((resolve, reject) => {
-        const request = net.request(UPDATES_MANIFEST_URL)
+        const request = net.request(url)
         let body = ''
         request.on('response', (res) => {
             if (res.statusCode < 200 || res.statusCode >= 300) {
-                reject(new Error(`updates.json HTTP ${res.statusCode}`))
+                reject(new Error(`${name} HTTP ${res.statusCode}`))
                 return
             }
             res.on('data', (chunk) => { body += chunk.toString('utf8') })
             res.on('end', () => {
                 try {
                     const data = JSON.parse(body)
-                    _manifestCache = { data, fetchedAt: Date.now() }
+                    _manifestCache.set(key, { data, fetchedAt: Date.now() })
                     resolve(data)
                 } catch (e) {
-                    reject(new Error(`updates.json parse failed: ${e.message}`))
+                    reject(new Error(`${name} parse failed: ${e.message}`))
                 }
             })
             res.on('error', reject)
@@ -156,9 +168,9 @@ export function initializeIpcHandlers() {
         return { taskId }
     });
 
-    ipcMain.handle('fetch-updates-manifest', async () => {
+    ipcMain.handle('fetch-updates-manifest', async (_, lane = 'stable') => {
         try {
-            return await fetchUpdatesManifest()
+            return await fetchUpdatesManifest(lane)
         } catch (error) {
             log.error('fetch-updates-manifest error:', error)
             throw error
@@ -187,6 +199,17 @@ export function initializeIpcHandlers() {
         try { session.handle.abort() } catch (e) { log.warn('service-logs-stop abort threw:', e?.message || e) }
         // onClose will delete the entry; ensure cleanup even if no close event fires
         logSessions.delete(sessionId)
+    });
+
+    ipcMain.handle('get-update-settings', async (_, nodeId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.getUpdateSettings()
+        } catch (error) {
+            log.error('get-update-settings error:', error)
+            throw error
+        }
     });
 
     ipcMain.handle('get-controls-commit', async (_, nodeId) => {

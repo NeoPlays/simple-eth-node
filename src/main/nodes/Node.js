@@ -34,6 +34,9 @@ import {
 } from "@main/nodes/validatorDuties";
 import { validateInterchange } from "@main/nodes/slashingProtection";
 import {
+    STEREUM_SETTINGS_PATH, buildUpdateStateScript, parseUpdateState, validateUpdatePatch, applyUpdatePatch,
+} from "@main/nodes/updateSettings";
+import {
     epochFromSlot, exitEligibility, parseSignedExit, exitBroadcastBody,
     isExitAccepted, exitStatusMessage, VOLUNTARY_EXIT_PATH, EXIT_POOL_PATH,
 } from "@main/nodes/voluntaryExit";
@@ -218,6 +221,55 @@ export class Node {
         const path = `/etc/stereum/services/${serviceId}.yaml`
         const response = await this.sshService.exec(`echo '${b64}' | base64 -d | sudo tee ${path} > /dev/null`, false)
         if (response.rc !== 0) throw new Error(response.stderr || `writeServiceConfig failed for ${serviceId}`)
+    }
+
+    /**
+     * The node's update policy: the `updates` block of stereum.yaml, the root cron entry that
+     * carries it out, and the server clock/timezone cron fires in. Read-only. Also refreshes the
+     * cached settings, so a later playbook run never works from a file older than what the UI shows.
+     */
+    async getUpdateSettings() {
+        const res = await this.sshService.exec(`sh -c ${shellQuote(buildUpdateStateScript())}`, true)
+        if (res.rc !== 0 && res.rc !== null) throw new Error(res.stderr || 'Could not read update settings')
+        const { settings, ...state } = parseUpdateState(res.stdout, (text) => YAML.parse(text))
+        if (settings) this.settings = settings
+        return state
+    }
+
+    /**
+     * Change the update policy (release channel and/or unattended schedule), the way the launcher's
+     * setStereumSettings does: rewrite stereum.yaml, then run `configure-updates` so the cron entry
+     * follows. The file is re-read first so a change made elsewhere since the last read survives;
+     * only the patched keys move. A failed role run leaves the file written and the cron as it was -
+     * getUpdateSettings reports that as drift, and applyUpdateSchedule re-runs just the role.
+     * @param {{ lane?: string, unattended?: { install?: boolean, interval_days?: number, hour?: number, min?: number } }} patch
+     */
+    async setUpdateSettings(patch) {
+        const errors = validateUpdatePatch(patch)
+        if (errors.length) throw new Error(errors.join('; '))
+        const current = await this.fetchSettings(true)
+        const next = applyUpdatePatch(current, patch)
+        await this.writeStereumSettings(next)
+        this.settings = next
+        await this.applyUpdateSchedule()
+        return this.getUpdateSettings()
+    }
+
+    /** Re-sync the cron entry with stereum.yaml (the `configure-updates` role reads the file itself). */
+    async applyUpdateSchedule() {
+        return this.runPlaybook('configure-updates')
+    }
+
+    /**
+     * Replace stereum.yaml atomically: decode to a sibling temp file, then rename over the original.
+     * Every playbook reads this file, so a write cut off halfway must never be what is left behind.
+     */
+    async writeStereumSettings(settings) {
+        const b64 = Buffer.from(YAML.stringify(settings)).toString('base64')
+        const tmp = `${STEREUM_SETTINGS_PATH}.tmp`
+        const script = `base64 -d > ${tmp} && chmod 644 ${tmp} && mv ${tmp} ${STEREUM_SETTINGS_PATH}`
+        const response = await this.sshService.exec(`echo '${b64}' | sudo sh -c ${shellQuote(script)}`, false)
+        if (response.rc !== 0 && response.rc !== null) throw new Error(response.stderr || `Could not write ${STEREUM_SETTINGS_PATH}`)
     }
 
     async startService(serviceId) {
@@ -1101,6 +1153,7 @@ export class Node {
             'update-stereum': 'Update controls',
             'update-changes': 'Apply config migrations',
             'update-os': 'Update OS',
+            'configure-updates': 'Apply update schedule',
         }[role] || role
     }
 

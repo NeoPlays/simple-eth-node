@@ -64,6 +64,9 @@ const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeTaskManager, fakeW
             updateStereum: vi.fn(),
             restartChangedServices: vi.fn(),
             runFullUpdate: vi.fn(),
+            setUpdateSettings: vi.fn(),
+            applyUpdateSchedule: vi.fn(),
+            getUpdateSettings: vi.fn(),
             streamServiceLogs: vi.fn(),
             deleteValidatorKeys: vi.fn(),
             importValidatorKeys: vi.fn(),
@@ -138,6 +141,7 @@ describe('ipcHandlers', () => {
             'get-system-locale',
             'get-system-metrics',
             'get-tasks',
+            'get-update-settings',
             'get-upgradable-packages',
             'get-validator-duties',
             'get-validator-settings',
@@ -272,6 +276,8 @@ describe('ipcHandlers', () => {
             ['update-services', 'updateServices', [['s1', 's2']], [['s1', 's2']]],
             ['update-stereum', 'updateStereum', [null], [null]],
             ['run-full-update', 'runFullUpdate', [null, true], [null, { prune: true }]],
+            ['set-update-settings', 'setUpdateSettings', [{ lane: 'dev' }], [{ lane: 'dev' }]],
+            ['apply-update-schedule', 'applyUpdateSchedule', [], []],
         ]
         for (const [action, method, args, expected] of cases) {
             it(`dispatches "${action}" to node.${method} through the task manager`, () => {
@@ -341,6 +347,15 @@ describe('ipcHandlers', () => {
 
             fakeNodeManager.findNode.mockReturnValueOnce(null)
             await expect(handlers['get-controls-commit'](event, 'n')).rejects.toThrow('Node not found')
+        })
+
+        it('get-update-settings delegates and propagates errors', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.getUpdateSettings.mockResolvedValueOnce({ drift: 'ok' })
+            expect(await handlers['get-update-settings'](event, 'n')).toEqual({ drift: 'ok' })
+
+            fakeNodeManager.findNode.mockReturnValueOnce(null)
+            await expect(handlers['get-update-settings'](event, 'n')).rejects.toThrow('Node not found')
         })
 
         it('get-os-info delegates and propagates errors', async () => {
@@ -491,6 +506,21 @@ describe('ipcHandlers', () => {
             manifestState.body = JSON.stringify({ stereum: [{ name: '2.4.6', commit: 'abc' }] })
             const r = await handlers['fetch-updates-manifest'](event)
             expect(r).toEqual({ stereum: [{ name: '2.4.6', commit: 'abc' }] })
+            expect(manifestState.lastUrl).toBe('https://stereum.com/downloads/updates.json')
+        })
+
+        it('fetches the dev manifest for the dev lane, cached separately from stable', async () => {
+            manifestState.body = JSON.stringify({ lane: 'x' })
+            await handlers['fetch-updates-manifest'](event, 'dev')
+            expect(manifestState.lastUrl).toBe('https://stereum.com/downloads/updates.dev.json')
+            await handlers['fetch-updates-manifest'](event, 'stable')
+            expect(manifestState.lastUrl).toBe('https://stereum.com/downloads/updates.json')
+            await handlers['fetch-updates-manifest'](event, 'dev')
+            expect(manifestState.calls).toBe(2)
+        })
+
+        it('falls back to the stable manifest for an unknown lane', async () => {
+            await handlers['fetch-updates-manifest'](event, 'nightly')
             expect(manifestState.lastUrl).toBe('https://stereum.com/downloads/updates.json')
         })
 

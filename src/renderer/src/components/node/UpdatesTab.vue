@@ -7,8 +7,13 @@
             <button class="btn-ghost" @click="copy(availableUpdatesText, 'updates')" :disabled="!availableUpdatesText">
                 {{ copied === 'updates' ? 'Copied' : 'Copy available updates' }}
             </button>
+            <!-- One status slot for every outcome on this tab (host, policy, services): it sits beside the
+                 buttons that usually caused it and never pushes the columns below around. -->
+            <div v-if="hostMessage" class="msg" :class="hostMessage.kind" role="status">{{ hostMessage.text }}</div>
         </div>
 
+        <!-- Host state and the policy that keeps it updated read as a pair; side by side when there is room. -->
+        <div class="panel host-policy">
         <section class="section">
             <h2 class="section-title">Host</h2>
                 <div class="host-row">
@@ -45,7 +50,10 @@
 
                 <div class="host-row">
                     <div class="host-info">
-                        <span class="host-label">Node Controls</span>
+                        <div class="service-title">
+                            <span class="host-label">Node Controls</span>
+                            <span v-if="lane === 'dev'" class="lane-chip" title="This node updates from the dev release channel">dev channel</span>
+                        </div>
                         <span v-if="controlsInfo" class="muted controls-version">
                             <template v-if="controlsInfo.version">
                                 <span class="mono">{{ controlsInfo.version }}</span>
@@ -71,10 +79,21 @@
                     </div>
                 </div>
 
-                <div v-if="hostMessage" class="msg" :class="hostMessage.kind">{{ hostMessage.text }}</div>
+                <div v-if="updateState && !updateState.yamlError" class="host-row facts-card">
+                    <span class="host-label">Stereum installation</span>
+                    <dl class="facts">
+                        <div class="fact"><dt>Settings file</dt><dd class="mono">/etc/stereum/stereum.yaml</dd></div>
+                        <div class="fact"><dt>Controls path</dt><dd class="mono">{{ updateState.controlsPath || '-' }}</dd></div>
+                        <div class="fact"><dt>Architecture</dt><dd class="mono">{{ updateState.arch || '-' }}</dd></div>
+                        <div class="fact" :title="updateState.cron?.line || ''"><dt>Update cron entry</dt><dd>{{ cronText }}</dd></div>
+                    </dl>
+                </div>
             </section>
 
-            <section class="section">
+            <UpdatePolicy :node-id="route.params.id" :state="updateState" :error="updateStateError" @reload="loadUpdateState" @flash="flashHost" />
+        </div>
+
+            <section class="panel">
                 <div class="section-head">
                     <h2 class="section-title">Services</h2>
                     <button
@@ -124,6 +143,8 @@ import { useRoute } from 'vue-router'
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useTasksStore } from '@stores/useTasks'
 import SetupGroups from './SetupGroups.vue'
+import UpdatePolicy from './UpdatePolicy.vue'
+import { intervalLabel, hhmm } from '@renderer/utils/updateSchedule'
 const route = useRoute()
 const tasks = useTasksStore()
 
@@ -143,8 +164,20 @@ const osExpanded = ref(false)
 const pkgBusy = reactive(new Set())
 const hostBusy = ref(null)
 const hostMessage = ref(null)
+let hostMessageTimer = null
+onUnmounted(() => clearTimeout(hostMessageTimer))
 const controlsCommit = ref(null)
 const controlsError = ref(null)
+const updateState = ref(null)
+const updateStateError = ref(null)
+// The node's release channel decides which manifest "latest" is measured against.
+const lane = computed(() => updateState.value?.updates?.lane || 'stable')
+const cronText = computed(() => {
+    const c = updateState.value?.cron
+    if (!c?.present) return 'none'
+    if (c.disabled) return 'present, commented out'
+    return `${intervalLabel(c.interval_days).toLowerCase()} at ${hhmm(c.hour, c.min)}`
+})
 
 const controlsInfo = computed(() => {
     if (!controlsCommit.value) return null
@@ -217,7 +250,7 @@ function serviceUpdate(service) {
 
 async function loadManifest() {
     try {
-        manifest.value = await window.api.invoke('fetch-updates-manifest')
+        manifest.value = await window.api.invoke('fetch-updates-manifest', lane.value)
     } catch (e) {
         console.error('fetch-updates-manifest failed:', e)
     }
@@ -229,6 +262,15 @@ async function loadControlsCommit() {
         controlsCommit.value = await window.api.invoke('get-controls-commit', route.params.id)
     } catch (e) {
         controlsError.value = e.message || String(e)
+    }
+}
+
+async function loadUpdateState() {
+    updateStateError.value = null
+    try {
+        updateState.value = await window.api.invoke('get-update-settings', route.params.id)
+    } catch (e) {
+        updateStateError.value = e.message || String(e)
     }
 }
 
@@ -251,7 +293,8 @@ async function loadOsPackages() {
 
 function flashHost(kind, text) {
     hostMessage.value = { kind, text }
-    setTimeout(() => { if (hostMessage.value?.text === text) hostMessage.value = null }, 5000)
+    clearTimeout(hostMessageTimer)
+    hostMessageTimer = setTimeout(() => { if (hostMessage.value?.text === text) hostMessage.value = null }, 6000)
 }
 
 // Parent reload triggers the nodeData watch, which re-fetches our host/controls data.
@@ -342,12 +385,16 @@ function loadHostData() {
     loadOsInfo()
     loadOsPackages()
     loadControlsCommit()
+    loadUpdateState()
 }
 
 onMounted(() => {
-    loadManifest() // app-global, 5min cache - load once
+    loadManifest() // app-global, 5min cache per lane
     loadHostData()
 })
+
+// A dev node is compared against updates.dev.json; reload once the lane is known or switched.
+watch(lane, () => loadManifest())
 
 // Re-fetch host/controls data whenever the parent reloads the node.
 watch(() => props.nodeData, () => loadHostData())
@@ -359,8 +406,61 @@ watch(() => props.nodeData, () => loadHostData())
     flex-direction: column;
     gap: var(--space-7);
 }
+/* A bordered frame per area, so section-level actions (Update all) sit in a header row instead of floating. */
+.panel {
+    padding: var(--space-6);
+    border: 1px solid var(--ev-c-gray-3);
+    border-radius: var(--radius-2xl);
+}
+.host-policy {
+    display: grid;
+    /* min() keeps a single column from overflowing on narrow windows. */
+    grid-template-columns: repeat(auto-fit, minmax(min(440px, 100%), 1fr));
+    gap: var(--space-7);
+    /* Stretch (not start): both columns take the taller one's height, and each column's last card
+       grows into the rest, so the two bottoms always line up. */
+    align-items: stretch;
+}
+.host-policy > .section { min-width: 0; }
+.host-policy > .section:first-child {
+    display: flex;
+    flex-direction: column;
+}
+.host-policy > .section:first-child > :last-child {
+    flex: 1 1 auto;
+    margin-bottom: 0;
+}
+.facts {
+    /* Flex, not a grid: paths keep their natural width and wrap to a new line instead of truncating. */
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3) var(--space-7);
+    margin: 0;
+}
+/* Same card as the OS / Node Controls rows, stacked: title above the facts instead of beside actions. */
+.host-row.facts-card {
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start; /* it may be stretched to the column height; keep content at the top */
+    gap: var(--space-3);
+}
+.fact { display: flex; flex-direction: column; gap: var(--space-1); min-width: 0; }
+.fact dt {
+    font-size: var(--font-size-micro);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--ev-c-text-3);
+}
+.fact dd {
+    margin: 0;
+    font-size: var(--font-size-secondary);
+    color: var(--ev-c-text-2);
+    overflow-wrap: anywhere;
+}
 .tab-actions {
     display: flex;
+    align-items: center;
+    flex-wrap: wrap;
     gap: var(--space-3);
 }
 
@@ -463,6 +563,15 @@ watch(() => props.nodeData, () => loadHostData())
 .muted.error { color: var(--color-danger); }
 .muted.mono { font-family: var(--font-mono); }
 
+.lane-chip {
+    font-size: var(--font-size-meta);
+    padding: 2px var(--space-2);
+    border-radius: var(--radius-sm);
+    background-color: var(--color-warning-soft);
+    color: var(--color-warning);
+    font-weight: var(--font-weight-medium);
+}
+
 .service-network {
     font-size: var(--font-size-meta);
     padding: 2px var(--space-2);
@@ -529,7 +638,6 @@ watch(() => props.nodeData, () => loadHostData())
     font-size: var(--font-size-secondary);
     padding: var(--space-2) var(--space-3);
     border-radius: var(--radius-md);
-    margin-top: var(--space-2);
 }
 .msg.success { color: var(--color-success); background-color: var(--color-success-soft); }
 .msg.error { color: var(--color-danger); background-color: var(--color-danger-soft); }

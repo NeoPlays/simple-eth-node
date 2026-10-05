@@ -43,6 +43,7 @@ src/
 │   ├── nodes/beaconValidators.js # Beacon validator-state enrichment: chunked POST script + parsers + which beacon to ask (pure)
 │   ├── nodes/slashingProtection.js # EIP-3076 interchange validation - the import safety gate (pure)
 │   ├── nodes/voluntaryExit.js   # Exit eligibility + two-step payload shapes (pure)
+│   ├── nodes/updateSettings.js  # stereum.yaml update policy: state-read script, cron parse/drift, patch validate/apply (pure)
 │   ├── tasks/TaskManager.js     # Singleton task registry (wraps long ops, parses stereumjson sub-tasks)
 │   ├── ssh/SSHService.js        # ssh2 connection pool
 │   └── store/StoreService.js    # electron-store wrapper
@@ -58,7 +59,8 @@ src/
     │   ├── serviceCategory.js   # service-type -> category (EC/CC/VC/other); groupServices() (setup->category, shared/commonServices setup last)
     │   ├── checkpointProviders.js  # public checkpoint-sync providers per network (resync modal)
     │   ├── validatorSetup.js    # classifyValidatorSetup() -> solo/remote-signer/obol/ssv; isSoloEligible, holdsOnChainValidators
-    │   └── validatorCapabilities.js  # per-role action sets (row/scope/drawer) + note; explorerUrl(network, index)
+    │   ├── validatorCapabilities.js  # per-role action sets (row/scope/drawer) + note; explorerUrl(network, index)
+    │   └── updateSchedule.js    # unattended-update cron maths: next runs in server time (DST-aware), month-end gaps
     ├── stores/
     │   ├── useNodes.js          # nodes[], nodeCache{}, refreshNodes(), getNode(id), refreshNode(id), disconnectNode(id), reconnectNode(id), isDisconnected(id)
     │   ├── useTasks.js          # tasks[], refreshTasks(), runningCount - hydrates via get-tasks, live off task-updated
@@ -71,6 +73,7 @@ src/
         └── node/                # Node.vue - detail shell (tabs + lifecycle); tab bodies: ServicesTab.vue,
                                  #   NodeMetrics.vue (Metrics), UpdatesTab.vue (Updates), ValidatorsTab.vue (Validators).
                                  #   SetupGroups.vue - shared setup/category grouping wrapper; ResyncModal.vue - resync + checkpoint picker
+                                 #   UpdatePolicy.vue - Updates tab "Update policy": unattended schedule + release channel
             └── validators/      # ValidatorTable.vue - dense key table (sticky head, teleported row menu);
                                  #   ValidatorDetailDrawer.vue - per-key detail drawer;
                                  #   ValidatorSettingModal.vue - fee recipient / graffiti;
@@ -78,6 +81,8 @@ src/
                                  #   ValidatorImportModal.vue - keystore import + EIP-3076 gate;
                                  #   ValidatorExitModal.vue - voluntary exit (preflight + typed confirm)
 ```
+
+**Updates tab layout** (`UpdatesTab.vue`): two bordered `.panel` frames (1px `--ev-c-gray-3`, `--radius-2xl`, `--space-6` padding) so section actions like Services' "Update all" sit in a header row instead of floating. The first holds Host and Update policy in one `.host-policy` grid (`auto-fit, minmax(min(440px, 100%), 1fr)`, `align-items: stretch`), side by side when wide and stacked when narrow. Both columns are always the same height: each column is a flex column whose last card grows (`flex: 1`, Update policy marks it `.fill`), so their bottoms line up; Host ends in a "Stereum installation" card (a stacked `.host-row.facts-card`: settings file, controls path, arch, update cron entry; the `.facts` list is flex-wrap so paths never truncate). The second holds Services. Every outcome message on the tab (host, policy via its `flash` emit, services) shows in one `role="status"` slot in the top `.tab-actions` row, never inside a column, so a banner cannot change column heights. Anything inside either column must tolerate ~440px.
 
 **Service card layout** (`ServicesTab.vue`): a flex column, not a grid. The top `.service-header` (name/status + action toolbar) is `flex-wrap: wrap` so the toolbar drops to its own line before anything overflows; `min-width:0` + ellipsis on the name/image/id rows keeps long strings from widening the card. Actions are two proximity clusters split by a divider - state controls (Start/Stop, Restart, semantic colors) and secondary tools (Resync, Logs, Edit, neutral; Resync goes red only on hover).
 
@@ -98,7 +103,7 @@ New channels must be added to **both** `ipcHandlers.js` and `ipcChannelWhitelist
 | `get-node`                                           | nodeId                           | full node DTO (SSH calls)                                                                                                      |
 | `disconnect-node`                                    | nodeId                           | -                                                                                                                              |
 | `reconnect-node`                                     | nodeId                           | `boolean` - true if reconnect succeeded                                                                                        |
-| `run-node-task`                                      | nodeId, action, args[]           | `{ taskId }` **immediately** (async). `action` ∈ `NODE_TASK_ACTIONS`: `start-service`/`stop-service`/`restart-service` (args `[id]`), `resync-service` (`[id, checkpointUrl?]`), `restart-changed-services` (`[scope, prune?]`), `update-os` (`[]`), `update-package` (`[name]`), `update-services` (`[ids?]`), `update-stereum` (`[commit?]`), `run-full-update` (`[commit?, prune?]`). Op runs in the background via the task manager; observe via `task-updated`. See `## Task Manager`. |
+| `run-node-task`                                      | nodeId, action, args[]           | `{ taskId }` **immediately** (async). `action` ∈ `NODE_TASK_ACTIONS`: `start-service`/`stop-service`/`restart-service` (args `[id]`), `resync-service` (`[id, checkpointUrl?]`), `restart-changed-services` (`[scope, prune?]`), `update-os` (`[]`), `update-package` (`[name]`), `update-services` (`[ids?]`), `update-stereum` (`[commit?]`), `run-full-update` (`[commit?, prune?]`), `set-update-settings` (`[patch]`), `apply-update-schedule` (`[]`). Op runs in the background via the task manager; observe via `task-updated`. See `## Task Manager`. |
 | `get-container-statuses`                             | nodeId                           | `{ [serviceId]: { state, status, image } }`                                                                                    |
 | `get-system-metrics`                                 | nodeId                           | `{ cpu: { usagePct, cores, load1 }, memory: { usedBytes, totalBytes, usedPct } }` - one cheap SSH exec over `/proc` (no disk; see `## Node Monitoring`) |
 | `get-client-metrics`                                 | nodeId                           | `{ [serviceId]: { role, api, syncing, syncPct, head, target?/clock?, peers, maxPeers, source, error? } }` - one `docker run curl` sidecar on the stereum network |
@@ -119,7 +124,8 @@ New channels must be added to **both** `ipcHandlers.js` and `ipcChannelWhitelist
 | `get-validator-states`                               | nodeId, pubkeys[], beaconUrl?     | `{ ok, states: { [pubkey]: { index, status, slashed, balance, effectiveBalance, withdrawalType, activationEpoch } }, source: 'node' \| 'validator-config' \| 'custom', base, error? }` - chunked `POST /eth/v1/beacon/states/head/validators` via a curl sidecar; `beaconUrl` overrides the resolution chain (running CL → validator client's configured beacon). `base` is the beacon that answered. Read-only |
 | `get-raw-service-config`                             | nodeId, serviceId                | YAML string                                                                                                                    |
 | `write-service-config`                               | nodeId, serviceId, content       | -                                                                                                                              |
-| `fetch-updates-manifest`                             | -                                | parsed `stereum.com/downloads/updates.json` (5min cache, main-process fetched via `electron.net`)                              |
+| `fetch-updates-manifest`                             | lane?                            | parsed `stereum.com/downloads/updates.json`, or `updates.dev.json` for `lane: 'dev'` (5min cache per lane, main-process fetched via `electron.net`) |
+| `get-update-settings`                                | nodeId                           | `{ yamlError, updates: { lane, laneRaw, unattended: { install, interval_days, hour, min } }, cron: { present, disabled?, line?, min, hour, interval_days }, drift: 'ok' \| 'missing' \| 'stale' \| 'mismatch' \| null, controlsPath, arch, server: { now, offsetMinutes, timeZone } }` - one sudo exec; see `## Update policy` |
 | `get-os-info`                                        | nodeId                           | OS distro + version string (e.g. `Ubuntu 22.04.3 LTS`) from `/etc/os-release` `PRETTY_NAME`                                    |
 | `get-upgradable-packages`                            | nodeId                           | `{ name, currentVersion, newVersion }[]` from `apt list --upgradable`                                                          |
 | `get-controls-commit`                                | nodeId                           | full commit hash of `<controls_install_path>/ansible` git checkout                                                             |
@@ -276,7 +282,7 @@ Every mutating validator action goes through its **own whitelisted channel**, ne
 Singleton `TaskManager` (`src/main/tasks/TaskManager.js`, same shape as `NodeManager`) that runs long-running operations **asynchronously** (fire-and-forget) as observable tasks - the stereum-launcher model. **In-memory only** - survives navigation, not an app restart (cross-restart history is the future audit-log item). Capped ring buffer (100), newest first.
 
 - `run(label, fn, { nodeId })` - **non-blocking**: creates the task, starts `fn` in the background, and **returns the task id synchronously**. The op no longer holds an IPC call open and survives renderer navigation. Errors are captured on the task (`status: 'failed'` + `error`), **never thrown** - there is no caller awaiting them.
-- **Live sub-tasks, grouped per playbook** - `run` runs `fn` inside an `AsyncLocalStorage` context (`taskContext`) carrying a reporter. `runPlaybook` reads it via `getStore()` (no callback threading through Node methods) and, while the playbook runs, **polls the `ANSIBLE_LOG_FOLDER` file every 2s** (`PLAYBOOK_POLL_MS`), parsing and reporting sub-tasks as ansible logs them - so only *executed* steps appear and the panel fills in live. Each `runPlaybook` claims a reporter **segment** (`begin(label)`) that becomes a **group** - so a composite op (multiple playbooks, even parallel like `restartChangedServices`) shows each playbook's steps under its own heading rather than one flat list. The task carries both `groups` (`[{ label, status, subTasks }]`, in `begin()` order) and a flattened `subTasks` (for status/count). Group labels come from `Node._playbookLabel(role, stereumArgs)` (e.g. `Restart service · <short-id>`, `Update controls`). On completion `run` only falls back to parsing the result (`_recordResult`, which also emits groups) when nothing streamed (non-playbook ops).
+- **Live sub-tasks, grouped per playbook** - `run` runs `fn` inside an `AsyncLocalStorage` context (`taskContext`) carrying a reporter. `runPlaybook` reads it via `getStore()` (no callback threading through Node methods) and, while the playbook runs, **polls the `ANSIBLE_LOG_FOLDER` file every 2s** (`PLAYBOOK_POLL_MS`), parsing and reporting sub-tasks as ansible logs them - so only *executed* steps appear and the panel fills in live. Each `runPlaybook` claims a reporter **segment** (`begin(label)`) that becomes a **group** - so a composite op (multiple playbooks, even parallel like `restartChangedServices`) shows each playbook's steps under its own heading rather than one flat list. The task carries both `groups` (`[{ label, status, subTasks }]`, in `begin()` order) and a flattened `subTasks` (for status/count). Group labels come from `Node._playbookLabel(role, stereumArgs)` (e.g. `Restart service, <short-id>`, `Update controls`). On completion `run` only falls back to parsing the result (`_recordResult`, which also emits groups) when nothing streamed (non-playbook ops).
 - **Sub-task parsing** (`parseSubTasks`, exported + unit-tested) mirrors the launcher's TaskManager: the stereumjson **log** (`response.log` - the `ANSIBLE_LOG_FOLDER` file, *not* stdout) splits on blank lines into blocks with `TASK:` / `ACTION:` / `CATEGORY:` lines (CATEGORY ∈ `OK`/`FAILED`/`SKIPPED`); `START_TASK` marker blocks are skipped. Each sub-task is `{ name, action, status, data }` where `data` is the raw block. Task status is `failed` if any block's CATEGORY is `FAILED`.
 - **Single dispatch channel:** all tracked ops go through `run-node-task(nodeId, action, args[])` → the `NODE_TASK_ACTIONS` allowlist map (in `ipcHandlers`) resolves `action` to a label + Node call, fires it via `taskManager.run`, and returns `{ taskId }` immediately. Adding a tracked op = one line in `NODE_TASK_ACTIONS`, no new channel. Read-only/fetch calls keep their own channels (renderer needs their return value synchronously).
 - **Push**: `TaskManager.onUpdate(cb)` → `ipcHandlers` broadcasts `task-updated` (full DTO) to all windows on create + every transition (incl. each live poll). Renderer: `useTasks` hydrates once via `get-tasks`, stays live off `task-updated`; `runNodeTask(nodeId, action, args)` returns the taskId, `awaitTask(taskId)` resolves when it leaves `running` (used by Node.vue/UpdatesTab.vue to drive their busy/flash/refresh UX off the registry instead of a held IPC call). `useTasks` is fully unit-tested (`tests/renderer/useTasks.test.js`, 100% coverage).
@@ -356,6 +362,7 @@ The `stereumjson` callback writes its structured per-task records (the `TASK:`/`
 | `update-stereum`   | Update the stereum controls checkout (optionally pinned to `override_gitcommit`)       |
 | `update-changes`   | Apply config migrations the new controls ship (run after `update-stereum`)             |
 | `update-os`        | OS package upgrades; pass `only_os_updates:true` to skip the reboot path               |
+| `configure-updates`| Add/remove the root cron entry for unattended updates, from stereum.yaml               |
 | `delete-service`   | Remove container, image, config file, and data dirs                                    |
 | `restart-services` | Restart services with recently-changed configs (we reimplement this in JS - see below) |
 
@@ -375,10 +382,27 @@ stereum_settings:
   settings:
     controls_install_path: /opt/stereum
     arch: x86_64
-    updates: { ... }
+    updates:
+      lane: stable          # stable | dev - picks updates.json vs updates.dev.json
+      unattended:
+        install: true       # root cron entry present?
+        interval_days: 1    # cron day-of-month step */N (1-28)
+        hour: 0
+        min: 26
 ```
 
-Access controls path via `node.settings.stereum_settings.settings.controls_install_path`.
+That is the whole upstream schema (`controls/roles/setup/templates/stereum.yaml`). Access controls path via `node.settings.stereum_settings.settings.controls_install_path`.
+
+### Update policy
+
+`UpdatePolicy.vue` on the Updates tab edits `updates.*` only (`controls_install_path` and `arch` are install-time facts; changing them breaks every role). Write path mirrors the launcher's `setStereumSettings`, via `run-node-task('set-update-settings', [patch])` → `Node.setUpdateSettings`: validate the patch (`validateUpdatePatch`, unknown keys rejected) → re-read the file → `applyUpdatePatch` (refuses a file without `controls_install_path`) → atomic write (`base64 -d > stereum.yaml.tmp && mv`) → `configure-updates`. **Writing the file alone changes nothing** - only the role touches the cron.
+
+The cron is what really runs, so `get-update-settings` reads it back (`#Ansible: stereum auto unattended update` + the job line) and reports `drift` against the file; the UI offers `apply-update-schedule` (role only) to reconcile. Display rules:
+
+- Cron fires in **server-local** time: the server's IANA zone (timedatectl, `/etc/timezone`, `/etc/localtime` link) or the fixed `date +%z` offset; never this machine's zone. Next runs come from `nextRuns` in `utils/updateSchedule.js`.
+- `*/N` is a day-of-month step, not a rolling interval (every 7 days = 1st, 8th, 15th, 22nd, 29th, then the 1st again). Short month-end gaps are flagged per run.
+- **Legacy installs** wrote only `install: true`; `configure-updates` then picked `default(59 | random)` minute, `default(3 | random)` hour, `default(1)` day step. Missing fields stay `null` (never invented), `updates.unpinned` flags it, the cron value fills them in the UI, and `cronDrift` only compares fields the file pins (interval defaults to 1). `random` is unseeded, so re-running the role rolls a new time: for an unpinned schedule the card says so, the drift button opens the editor instead of re-applying, and Save is enabled without edits to write the cron's time into the file.
+- An unattended run is `update-os` (dist-upgrade, **may reboot**) → `update-stereum` → `update-services` → restart changed; the card spells this out before it is turned on.
 
 **`runPlaybook(role, stereumArgs = {}, topLevelVars = {})` payload shape:**
 The JSON passed to `--extra-vars` is `{ stereum_role: role, ...topLevelVars }`, plus a `stereum_args` key **only when `stereumArgs` is non-empty**. Per-role config goes under `stereum_args` (NOT a bare `stereum` key - that was an earlier wrong guess); a few vars are top-level instead.
@@ -390,6 +414,7 @@ The JSON passed to `--extra-vars` is `{ stereum_role: role, ...topLevelVars }`, 
 | `updateOS()`                                  | `only_os_updates: true` (top-level)                                                                            |
 | `_runServicesUpdate(ids)`                     | `services_to_update` **top-level**: single id → bare string, multiple → array, none → omitted                  |
 | `_runStereumUpdate(commit)`                   | `override_gitcommit: commit` (top-level) when a commit is pinned                                               |
+| `applyUpdateSchedule()` (`configure-updates`) | none - the role reads `stereum.settings.updates` from the file `genericPlaybook` loads at start                 |
 
 **From Electron:** SSH exec the playbook command → parse stdout/stderr + exit code for status.
 
@@ -424,6 +449,7 @@ All tokens are CSS variables defined in `src/renderer/src/assets/base.css`. **Us
 | `--color-danger-border`                        | outline for destructive buttons                                                     |
 | `--scrim`                                       | modal/drawer overlay backdrop                                                        |
 | `--shadow-menu`                                | elevation for floating popovers (row-action menu)                                   |
+| `--native-color-scheme`                        | `color-scheme` value for native controls (e.g. `<input type="time">` picker icon), `dark` / `light` per theme |
 
 All semantic colors and their `-soft` variants have a darker counterpart under `[data-theme="light"]` for contrast - never hardcode the hex literals (e.g. `#98c379`, `rgba(152, 195, 121, 0.1)`) in a component or you bake in the dark palette.
 
@@ -486,6 +512,10 @@ Two bundled font families loaded via `@fontsource` (see `src/renderer/src/main.j
 - **Dense data table** (`validators/ValidatorTable.vue`) - CSS grid with a fixed `grid-template-columns` shared by the header and body rows (38px checkbox, 84px index, `minmax(0,1fr)` key, then fixed status/balance/withdrawal/actions). Header 38px tall on `--color-background-mute`, rows 46px, `--font-size-meta` uppercase header labels. The scroll region is `max-height: min(62vh, 720px)` on the rows container so the header stays put. Selected row = `--color-accent-wash`.
 - **Floating popover** (row-action menu) - teleported to `body`, positioned from the trigger's `getBoundingClientRect()`, `--shadow-menu` elevation. Must dismiss on Esc, outside click, **and scroll** (capture-phase listeners, added only while open).
 - **Connect-screen form** (`login/SSHCredentials.vue`) - a **6-column grid**; each field declares a `span` (Name 6, Host 4 + Port 2, the credential pairs 3+3) so related inputs share a row instead of stacking full-width. Add new fields with a span, don't switch the container back to a flex column.
+- **Switch** (`UpdatePolicy.vue` schedule dialog) - a `<button role="switch" :aria-checked>`, 40x22 track on `--ev-c-gray-2`, `--color-accent` when on; for settings that save through a draft + Save footer, not instantly.
+- **Segmented control** (`.seg`) - `role="radiogroup"` of buttons in a `--color-background-mute` pill; active = `--color-accent-soft` bg + `--color-accent` text.
+- **Option cards** (release channel) - radio-style buttons in an `auto-fit` grid; active = `--color-accent` border + `--color-accent-wash`.
+- **Summary card + editor dialog** - a settings card stays a compact summary (status pill, one-line state, an `Edit` / `Set up` `btn-edit`); the form lives in a `.modal-wide` dialog (620px, body scrolls, header and footer fixed). Every open starts from the saved state; Cancel/Esc/overlay discard. The footer is split: change summary left, Cancel + Save right, Save disabled until dirty and valid; a failed save keeps the dialog open with the error inside it.
 - **Transitions** - use `var(--transition-fast)` (150ms) for background/border hover transitions.
 
 ### Theming (dark + light)
