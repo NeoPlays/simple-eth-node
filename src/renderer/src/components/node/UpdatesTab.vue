@@ -145,6 +145,7 @@ import { useTasksStore } from '@stores/useTasks'
 import SetupGroups from './SetupGroups.vue'
 import UpdatePolicy from './UpdatePolicy.vue'
 import { intervalLabel, hhmm } from '@renderer/utils/updateSchedule'
+import { latestVersion } from '@renderer/utils/updateManifest'
 const route = useRoute()
 const tasks = useTasksStore()
 
@@ -243,8 +244,7 @@ function serviceUpdate(service) {
     const serviceType = service.config?.service
     const network = service.config?.network
     const current = parseImageTag(service.config?.image)
-    const versions = manifest.value?.[network]?.[serviceType] ?? null
-    const latest = versions?.length ? versions[versions.length - 1] : null
+    const latest = latestVersion(manifest.value, network, serviceType)
     return { current, latest, upgradable: !!(latest && current && latest !== current) }
 }
 

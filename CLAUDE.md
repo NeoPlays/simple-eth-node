@@ -60,7 +60,8 @@ src/
     │   ├── checkpointProviders.js  # public checkpoint-sync providers per network (resync modal)
     │   ├── validatorSetup.js    # classifyValidatorSetup() -> solo/remote-signer/obol/ssv; isSoloEligible, holdsOnChainValidators
     │   ├── validatorCapabilities.js  # per-role action sets (row/scope/drawer) + note; explorerUrl(network, index)
-    │   └── updateSchedule.js    # unattended-update cron maths: next runs in server time (DST-aware), month-end gaps
+    │   ├── updateSchedule.js    # unattended-update cron maths: next runs in server time (DST-aware), month-end gaps
+    │   └── updateManifest.js    # latest service version from updates.json; networks it lacks (gnosis) fall back to mainnet, like the update-services role
     ├── stores/
     │   ├── useNodes.js          # nodes[], nodeCache{}, refreshNodes(), getNode(id), refreshNode(id), disconnectNode(id), reconnectNode(id), isDisconnected(id)
     │   ├── useTasks.js          # tasks[], refreshTasks(), runningCount - hydrates via get-tasks, live off task-updated
