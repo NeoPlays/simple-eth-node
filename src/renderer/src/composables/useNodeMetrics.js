@@ -21,8 +21,11 @@ export function useNodeMetrics(nodeId, { intervalMs = 5000, diskIntervalMs = 300
     let clientsInFlight = false
     let diskInFlight = false
     // serviceId -> consecutive peer-less probes; carry the last known peer count so one timed-out curl doesn't blank the bar.
+    // The inbound/outbound split is counted separately: it can drop out on its own (the probe
+    // only reports it when the peer listing agrees with peer_count) while the total is fine.
     const PEER_MISS_LIMIT = 3
     let peerMisses = {}
+    let dirMisses = {}
 
     const id = () => (typeof nodeId === 'function' ? nodeId() : unref(nodeId))
 
@@ -46,10 +49,18 @@ export function useNodeMetrics(nodeId, { intervalMs = 5000, diskIntervalMs = 300
         try {
             const fresh = await window.api.invoke('get-client-metrics', id())
             for (const [sid, m] of Object.entries(fresh)) {
-                if (m.error || m.peers != null) { peerMisses[sid] = 0; continue }
                 const prev = clients.value[sid]
-                peerMisses[sid] = (peerMisses[sid] || 0) + 1
-                if (prev?.peers != null && peerMisses[sid] <= PEER_MISS_LIMIT) m.peers = prev.peers
+                if (m.error) { peerMisses[sid] = 0; dirMisses[sid] = 0; continue }
+                if (m.peers != null) peerMisses[sid] = 0
+                else {
+                    peerMisses[sid] = (peerMisses[sid] || 0) + 1
+                    if (prev?.peers != null && peerMisses[sid] <= PEER_MISS_LIMIT) m.peers = prev.peers
+                }
+                if (m.peersIn != null) dirMisses[sid] = 0
+                else if (prev?.peersIn != null) {
+                    dirMisses[sid] = (dirMisses[sid] || 0) + 1
+                    if (dirMisses[sid] <= PEER_MISS_LIMIT) { m.peersIn = prev.peersIn; m.peersOut = prev.peersOut }
+                }
             }
             clients.value = fresh
             clientsError.value = null
@@ -82,6 +93,7 @@ export function useNodeMetrics(nodeId, { intervalMs = 5000, diskIntervalMs = 300
     function start() {
         stop()
         peerMisses = {}
+        dirMisses = {}
         refresh()
         timer = setInterval(() => { if (shouldPoll()) { refreshSystem(); refreshClients() } }, intervalMs)
         diskTimer = setInterval(() => { if (shouldPoll()) refreshDisk() }, diskIntervalMs)

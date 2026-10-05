@@ -101,6 +101,19 @@ describe('buildClientProbeScript', () => {
         expect(buildClientProbeScript([mk('LodestarBeaconService')])).toContain(':9596/eth/v1/node/syncing')
     })
 
+    it('counts the beacon peer listing by direction in the sidecar, not over the wire', () => {
+        const script = buildClientProbeScript([lh])
+        // Only the three counts leave the container - the ~40KB listing never crosses SSH.
+        expect(script).toContain(`http://stereum-${lh.id}:5052/eth/v1/node/peers?state=connected`)
+        expect(script).toContain(`grep -c '"direction"[[:space:]]*:[[:space:]]*"inbound"'`)
+        expect(script).toContain(`grep -c '"direction"[[:space:]]*:[[:space:]]*"outbound"'`)
+        expect(script).toContain(`echo '{"__peers__":{"connected":'$C',"inbound":'$I',"outbound":'$O'}}'`)
+    })
+
+    it('asks no execution client for a peer listing (no direction in JSON-RPC)', () => {
+        expect(buildClientProbeScript([geth])).not.toContain('__peers__')
+    })
+
     it('adds a single Prometheus query for beacon slot metrics when promHost is given', () => {
         const script = buildClientProbeScript([lh], { promHost: 'stereum-prom:9090' })
         expect(script).toContain('===__prom__===')
@@ -108,8 +121,15 @@ describe('buildClientProbeScript', () => {
         expect(script).toContain('slotclock_present_slot')
         expect(script).toContain('beacon_head_state_slot')
     })
-    it('omits the Prometheus block when no consensus client is running', () => {
-        expect(buildClientProbeScript([geth], { promHost: 'stereum-prom:9090' })).not.toContain('__prom__')
+    it('queries the execution peer-direction gauges for clients that export them', () => {
+        const script = buildClientProbeScript([geth], { promHost: 'stereum-prom:9090' })
+        expect(script).toContain('p2p_peers_inbound|p2p_peers_outbound')
+    })
+
+    it('omits the Prometheus block when nothing running exports a metric it needs', () => {
+        // Besu has no per-direction gauge, so an all-Besu node needs no Prometheus query at all.
+        const besu = { id: 'dddddddd-0000-0000-0000-dddddddddddd', config: { service: 'BesuService' }, container: { state: 'running' } }
+        expect(buildClientProbeScript([besu], { promHost: 'stereum-prom:9090' })).not.toContain('__prom__')
     })
 })
 
@@ -175,6 +195,115 @@ describe('parseClientMetrics', () => {
         const r = parseClientMetrics(out, [lh])[lh.id]
         // 1900 / (1900+100) = 95%
         expect(r).toMatchObject({ role: 'consensus', syncing: true, syncPct: 95, peers: 64 })
+    })
+
+    it('splits beacon peers into inbound/outbound from the sidecar counts', () => {
+        const out = [
+            `===${lh.id}===`,
+            '{"data":{"head_slot":"2000","sync_distance":"0","is_syncing":false}}',
+            '',
+            '{"data":{"connected":"64"}}',
+            '',
+            '{"__peers__":{"connected":64,"inbound":48,"outbound":16}}',
+        ].join('\n')
+        const r = parseClientMetrics(out, [lh])[lh.id]
+        expect(r).toMatchObject({ peers: 64, peersIn: 48, peersOut: 16 })
+    })
+
+    it('drops the split when the listing disagrees with peer_count (client ignored ?state=)', () => {
+        const out = [
+            `===${lh.id}===`,
+            '{"data":{"head_slot":"2000","sync_distance":"0","is_syncing":false}}',
+            '',
+            '{"data":{"connected":"64"}}',
+            '',
+            '{"__peers__":{"connected":70,"inbound":50,"outbound":20}}', // listing includes disconnected peers
+        ].join('\n')
+        const r = parseClientMetrics(out, [lh])[lh.id]
+        expect(r.peers).toBe(64) // peer_count stays authoritative
+        expect(r.peersIn).toBeUndefined()
+        expect(r.peersOut).toBeUndefined()
+    })
+
+    it('drops the split when directions do not account for every listed peer', () => {
+        const out = [
+            `===${lh.id}===`,
+            '{"data":{"head_slot":"2000","sync_distance":"0","is_syncing":false}}',
+            '',
+            '{"data":{"connected":"64"}}',
+            '',
+            '{"__peers__":{"connected":64,"inbound":0,"outbound":0}}', // client omits `direction`
+        ].join('\n')
+        const r = parseClientMetrics(out, [lh])[lh.id]
+        expect(r.peers).toBe(64)
+        expect(r.peersIn).toBeUndefined()
+    })
+
+    it('falls back to the listing total when the peer_count curl failed', () => {
+        const out = [
+            `===${lh.id}===`,
+            '{"data":{"head_slot":"2000","sync_distance":"0","is_syncing":false}}',
+            '',
+            '{"__peers__":{"connected":30,"inbound":20,"outbound":10}}',
+        ].join('\n')
+        const r = parseClientMetrics(out, [lh])[lh.id]
+        expect(r).toMatchObject({ peers: 30, peersIn: 20, peersOut: 10 })
+    })
+
+    it('splits execution peers from the client Prometheus gauges', () => {
+        const out = [
+            `===${geth.id}===`,
+            '{"id":1,"result":false}', '', '{"id":2,"result":"0x32"}', '', '{"id":3,"result":"0x14f6a1"}',
+            '',
+            '===__prom__===',
+            JSON.stringify({ status: 'success', data: { result: [
+                { metric: { __name__: 'p2p_peers_inbound', instance: `stereum-${geth.id}:6060` }, value: [1, '30'] },
+                { metric: { __name__: 'p2p_peers_outbound', instance: `stereum-${geth.id}:6060` }, value: [1, '20'] },
+            ] } }),
+        ].join('\n')
+        const r = parseClientMetrics(out, [geth])[geth.id]
+        expect(r).toMatchObject({ peers: 50, peersIn: 30, peersOut: 20 })
+    })
+
+    it('tolerates small drift between the live peer count and the scraped gauges', () => {
+        // net_peerCount is live, the gauges are up to a scrape interval old - they rarely agree exactly.
+        const out = [
+            `===${geth.id}===`,
+            '{"id":1,"result":false}', '', '{"id":2,"result":"0x32"}', '', '{"id":3,"result":"0x14f6a1"}',
+            '',
+            '===__prom__===',
+            JSON.stringify({ status: 'success', data: { result: [
+                { metric: { __name__: 'p2p_peers_inbound', instance: `stereum-${geth.id}:6060` }, value: [1, '29'] },
+                { metric: { __name__: 'p2p_peers_outbound', instance: `stereum-${geth.id}:6060` }, value: [1, '19'] },
+            ] } }),
+        ].join('\n')
+        const r = parseClientMetrics(out, [geth])[geth.id]
+        expect(r).toMatchObject({ peers: 50, peersIn: 29, peersOut: 19 })
+    })
+
+    it('drops an execution split that has gone stale against the live peer count', () => {
+        const out = [
+            `===${geth.id}===`,
+            '{"id":1,"result":false}', '', '{"id":2,"result":"0x32"}', '', '{"id":3,"result":"0x14f6a1"}',
+            '',
+            '===__prom__===',
+            JSON.stringify({ status: 'success', data: { result: [
+                { metric: { __name__: 'p2p_peers_inbound', instance: `stereum-${geth.id}:6060` }, value: [1, '2'] },
+                { metric: { __name__: 'p2p_peers_outbound', instance: `stereum-${geth.id}:6060` }, value: [1, '1'] },
+            ] } }),
+        ].join('\n')
+        const r = parseClientMetrics(out, [geth])[geth.id]
+        expect(r.peers).toBe(50)
+        expect(r.peersIn).toBeUndefined()
+    })
+
+    it('leaves execution clients with no per-direction gauge unsplit', () => {
+        // Nethermind only has cumulative connection counters - never rendered as a live split.
+        const nm = { id: 'eeeeeeee-0000-0000-0000-eeeeeeeeeeee', config: { service: 'NethermindService' }, container: { state: 'running' } }
+        const out = `===${nm.id}===\n{"id":1,"result":false}\n\n{"id":2,"result":"0x32"}\n`
+        const r = parseClientMetrics(out, [nm])[nm.id]
+        expect(r.peers).toBe(50)
+        expect(r.peersIn).toBeUndefined()
     })
 
     it('includes maxPeers from the client default when the config sets no flag', () => {

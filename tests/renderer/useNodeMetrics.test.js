@@ -30,6 +30,42 @@ describe('useNodeMetrics', () => {
         expect(m.loading.value).toBe(false)
     })
 
+    it('carries the last inbound/outbound split over a few splitless polls, then lets it go', async () => {
+        // The split drops out on its own whenever the peer listing disagrees with peer_count,
+        // so it has to survive a miss independently of the (still present) total.
+        const ticks = [
+            { 'svc-1': { peers: 64, peersIn: 48, peersOut: 16 } },
+            { 'svc-1': { peers: 64 } },
+            { 'svc-1': { peers: 64 } },
+            { 'svc-1': { peers: 64 } },
+            { 'svc-1': { peers: 64 } }, // 4th miss - past PEER_MISS_LIMIT
+        ]
+        let i = 0
+        invoke.mockImplementation((ch) => Promise.resolve(ch === 'get-client-metrics' ? ticks[i++] : {}))
+        const m = useNodeMetrics('n', { intervalMs: 5000 })
+        m.start()
+        await vi.advanceTimersByTimeAsync(0)
+        expect(m.clients.value['svc-1']).toMatchObject({ peersIn: 48, peersOut: 16 })
+        for (let t = 0; t < 3; t++) await vi.advanceTimersByTimeAsync(5000)
+        expect(m.clients.value['svc-1']).toMatchObject({ peers: 64, peersIn: 48, peersOut: 16 })
+        await vi.advanceTimersByTimeAsync(5000)
+        expect(m.clients.value['svc-1'].peers).toBe(64) // total never lapsed
+        expect(m.clients.value['svc-1'].peersIn).toBeUndefined()
+        m.stop()
+    })
+
+    it('keeps carrying the total when only the peer count is missing', async () => {
+        const ticks = [{ 'svc-1': { peers: 12, peersIn: 8, peersOut: 4 } }, { 'svc-1': {} }]
+        let i = 0
+        invoke.mockImplementation((ch) => Promise.resolve(ch === 'get-client-metrics' ? ticks[i++] : {}))
+        const m = useNodeMetrics('n', { intervalMs: 5000 })
+        m.start()
+        await vi.advanceTimersByTimeAsync(0)
+        await vi.advanceTimersByTimeAsync(5000)
+        expect(m.clients.value['svc-1']).toMatchObject({ peers: 12, peersIn: 8, peersOut: 4 })
+        m.stop()
+    })
+
     it('resolves a ref-typed nodeId lazily on each call', async () => {
         let id = 'a'
         const m = useNodeMetrics(() => id)

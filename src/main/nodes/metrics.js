@@ -178,14 +178,26 @@ export function parseDiskBreakdown(stdout, services = []) {
  * stereum-dev/ethereum-node `launcher/src/backend/ethereum-services/*Service.js`
  * (never probe 8551 - JWT-gated engine port). `peerFlags`/`defaultMaxPeers` feed
  * `resolveMaxPeers`; defaults are from client docs - re-check the CLI before editing.
+ *
+ * promPeersIn/promPeersOut: execution-only. JSON-RPC has no peer direction (`net_peerCount`
+ * is a bare total and `admin_peers` isn't exposed over HTTP), so the split has to come from
+ * Prometheus - and only where the client exports a *current* gauge per direction:
+ *   - geth `p2p/peers/inbound|outbound` (Gauge; `/`->`_` in the Prometheus collector)
+ *   - reth `network::incoming_connections|outgoing_connections` ("Number of active in/outgoing
+ *     connections", Gauge; exported under the `reth_` prefix)
+ * Deliberately absent elsewhere: nethermind's IncomingConnections/OutgoingConnections are
+ * `++`-only cumulative counters, erigon exports just the `p2p_peers` total, besu's rlpx
+ * metrics are connection-attempt counters, and ethrex's names are unverified. A cumulative
+ * counter is NOT a current split - adding one here would render a lifetime total as a
+ * live peer count.
  */
 export const CLIENT_REGISTRY = {
     // Execution (JSON-RPC http port - all 8545)
-    GethService:       { role: 'execution', api: 'jsonrpc', port: 8545, peerFlags: ['--maxpeers'], defaultMaxPeers: 50 },
+    GethService:       { role: 'execution', api: 'jsonrpc', port: 8545, peerFlags: ['--maxpeers'], defaultMaxPeers: 50, promPeersIn: 'p2p_peers_inbound', promPeersOut: 'p2p_peers_outbound' },
     NethermindService: { role: 'execution', api: 'jsonrpc', port: 8545, peerFlags: ['--Network.MaxActivePeers'], defaultMaxPeers: 50 },
     BesuService:       { role: 'execution', api: 'jsonrpc', port: 8545, peerFlags: ['--max-peers'], defaultMaxPeers: 25 },
     ErigonService:     { role: 'execution', api: 'jsonrpc', port: 8545, peerFlags: ['--maxpeers'], defaultMaxPeers: 32 },
-    RethService:       { role: 'execution', api: 'jsonrpc', port: 8545, peerFlags: ['--max-peers'], defaultMaxPeers: 130 },
+    RethService:       { role: 'execution', api: 'jsonrpc', port: 8545, peerFlags: ['--max-peers'], defaultMaxPeers: 130, promPeersIn: 'reth_network_incoming_connections', promPeersOut: 'reth_network_outgoing_connections' },
     EthrexService:     { role: 'execution', api: 'jsonrpc', port: 8545, peerFlags: ['--p2p.target-peers'], defaultMaxPeers: 100 },
     // Consensus (Beacon REST port - Prysm's REST gateway is 3500, NOT its gRPC 4000).
     // promClock/promHead: exported slot metrics (clock = wall-clock target, head = synced
@@ -222,6 +234,29 @@ const containerName = (id) => `stereum-${id}`
 const marker = (id) => `===${id}===`
 
 /**
+ * Shell blocks counting a beacon node's connected peers by direction.
+ *
+ * `/eth/v1/node/peers` is the only spec endpoint carrying `direction`, but its listing is
+ * ~40KB at 200 peers - counted here in the sidecar so only the three numbers cross the SSH
+ * wire, emitted as a synthetic `__peers__` object the parser picks up alongside the real
+ * responses. `connected` is recounted from the same listing so {@link parseBeacon} can check
+ * it against `peer_count` before trusting the split (a client that ignores `?state=` or
+ * omits `direction` fails that check instead of reporting nonsense).
+ * Field patterns tolerate pretty-printed JSON; `tr` puts each field on its own line so
+ * `grep -c` counts fields rather than whole responses.
+ */
+function beaconPeerDirectionBlocks(host) {
+    const field = (key, val) => `"${key}"[[:space:]]*:[[:space:]]*"${val}"`
+    return [
+        `P=$(curl -s -m 3 'http://${host}/eth/v1/node/peers?state=connected' | tr ',' '\\n')`,
+        `C=$(echo "$P" | grep -c '${field('state', 'connected')}')`,
+        `I=$(echo "$P" | grep -c '${field('direction', 'inbound')}')`,
+        `O=$(echo "$P" | grep -c '${field('direction', 'outbound')}')`,
+        `echo '{"__peers__":{"connected":'$C',"inbound":'$I',"outbound":'$O'}}'`,
+    ]
+}
+
+/**
  * Build the sidecar script probing each running client (marker line + raw JSON blocks;
  * `-m 3` per request so one hung client can't stall the batch), plus one Prometheus
  * query block when `promHost` is given; null when nothing to probe.
@@ -237,6 +272,7 @@ export function buildClientProbeScript(services = [], { promHost = null } = {}) 
         if (!reg) continue
         if (svc.container?.state !== 'running') continue
         if (reg.promClock && reg.promHead) { promMetrics.add(reg.promClock); promMetrics.add(reg.promHead) }
+        if (reg.promPeersIn && reg.promPeersOut) { promMetrics.add(reg.promPeersIn); promMetrics.add(reg.promPeersOut) }
         const host = `${containerName(svc.id)}:${reg.port}`
         blocks.push(`echo '${marker(svc.id)}'`)
         if (reg.api === 'jsonrpc') {
@@ -253,6 +289,8 @@ export function buildClientProbeScript(services = [], { promHost = null } = {}) 
             blocks.push(`curl -s -m 3 http://${host}/eth/v1/node/syncing`)
             blocks.push("echo ''")
             blocks.push(`curl -s -m 3 http://${host}/eth/v1/node/peer_count`)
+            blocks.push("echo ''")
+            blocks.push(...beaconPeerDirectionBlocks(host))
         }
         blocks.push("echo ''")
     }
@@ -302,7 +340,10 @@ export function parseClientMetrics(stdout, services = []) {
 
         if (reg.api === 'jsonrpc') {
             if (!block) { out[svc.id] = { ...base, error: 'no response' }; continue }
-            try { out[svc.id] = { ...base, ...parseJsonRpc(jsons) } }
+            try {
+                const rpc = parseJsonRpc(jsons)
+                out[svc.id] = { ...base, ...rpc, ...promPeerDirections(promVector, svc.id, reg, rpc.peers) }
+            }
             catch (e) { out[svc.id] = { ...base, error: e?.message || 'parse failed' } }
             continue
         }
@@ -312,7 +353,10 @@ export function parseClientMetrics(stdout, services = []) {
         let api = null
         try { api = parseBeacon(jsons) } catch { /* API unavailable - may still have Prometheus */ }
         if (prom) {
-            out[svc.id] = { ...base, ...prom, peers: api?.peers ?? null, source: 'prometheus' }
+            out[svc.id] = {
+                ...base, ...prom, source: 'prometheus',
+                peers: api?.peers ?? null, peersIn: api?.peersIn ?? null, peersOut: api?.peersOut ?? null,
+            }
         } else if (api) {
             out[svc.id] = { ...base, ...api, source: 'beacon-api' }
         } else {
@@ -322,6 +366,35 @@ export function parseClientMetrics(stdout, services = []) {
     return out
 }
 
+/** One instant-vector sample for a service (matched by metric name + `instance` containing the id). */
+function promValueForService(promVector, serviceId, name) {
+    const row = promVector.find(
+        (r) => r.metric?.__name__ === name && String(r.metric?.instance || '').includes(serviceId)
+    )
+    const v = row ? Number(row.value?.[1]) : NaN
+    return Number.isFinite(v) ? v : null
+}
+
+/**
+ * Execution-client peer split from the Prometheus gauges named in the registry; `{}` when the
+ * client exports none, Prometheus isn't running, or the sample is too stale to believe.
+ *
+ * Unlike the beacon path these two numbers come from a *different source and instant* than
+ * `net_peerCount` (a scrape up to an interval old vs. a live JSON-RPC call), so they can't be
+ * required to add up exactly - normal churn would suppress the split almost every poll. The
+ * tolerance only rejects a sample that has clearly gone stale (client restarted, scraping
+ * stopped), where showing it would misreport the node's connectivity.
+ * @returns {{ peersIn:number, peersOut:number }|{}}
+ */
+function promPeerDirections(promVector, serviceId, reg, peers) {
+    if (!promVector || !reg?.promPeersIn || !reg?.promPeersOut) return {}
+    const peersIn = promValueForService(promVector, serviceId, reg.promPeersIn)
+    const peersOut = promValueForService(promVector, serviceId, reg.promPeersOut)
+    if (peersIn == null || peersOut == null || peersIn < 0 || peersOut < 0) return {}
+    if (peers != null && Math.abs(peersIn + peersOut - peers) > Math.max(2, peers * 0.1)) return {}
+    return { peersIn, peersOut }
+}
+
 /**
  * CL sync from the Prometheus vector (syncPct = head/clock, matched by metric name +
  * `instance` containing the service id); null → caller falls back to the beacon API.
@@ -329,13 +402,7 @@ export function parseClientMetrics(stdout, services = []) {
  */
 export function promSyncForService(promVector, serviceId, reg) {
     if (!promVector || !reg?.promClock || !reg?.promHead) return null
-    const valueOf = (name) => {
-        const row = promVector.find(
-            (r) => r.metric?.__name__ === name && String(r.metric?.instance || '').includes(serviceId)
-        )
-        const v = row ? Number(row.value?.[1]) : NaN
-        return Number.isFinite(v) ? v : null
-    }
+    const valueOf = (name) => promValueForService(promVector, serviceId, name)
     const head = valueOf(reg.promHead)
     const clock = valueOf(reg.promClock)
     if (head == null || clock == null || clock <= 0) return null
@@ -406,17 +473,41 @@ function parseJsonRpc(jsons) {
     return { syncing, syncPct, head, target, peers }
 }
 
+/**
+ * Inbound/outbound split from the sidecar's `__peers__` counts, or `{}` when it can't be
+ * trusted. The listing and `peer_count` are separate requests, so they only agree when the
+ * client honoured `?state=connected` and populated `direction` on every peer - anything else
+ * (an unsupported filter, a missing field, a peer joining between the two curls) fails the
+ * check and the split is simply omitted rather than guessed at.
+ * @param {object[]} jsons
+ * @param {number|null} connected - peer_count's connected total, or null when that curl failed
+ * @returns {{ peersIn:number, peersOut:number }|{}}
+ */
+function peerDirections(jsons, connected) {
+    const d = jsons.find((j) => j?.__peers__)?.__peers__
+    if (!d) return {}
+    const listed = toNum(d.connected), peersIn = toNum(d.inbound), peersOut = toNum(d.outbound)
+    if (listed == null || peersIn == null || peersOut == null) return {}
+    if (connected != null && listed !== connected) return {}
+    if (peersIn + peersOut !== listed) return {}
+    return { peersIn, peersOut }
+}
+
 function parseBeacon(jsons) {
     // Match responses by shape, not position - a timed-out curl would otherwise shift
     // the other response into the wrong slot.
     const syncingRes = jsons.find((j) => j?.data && j.data.is_syncing !== undefined)
     const peerRes = jsons.find((j) => j?.data && j.data.connected !== undefined)
+    // peer_count stays the authoritative total; the trusted listing stands in when that
+    // curl failed, so one timed-out request doesn't cost both the total and the split.
+    const connected = toNum(peerRes?.data?.connected)
+    const dirs = peerDirections(jsons, connected)
+    const peers = connected ?? (dirs.peersIn != null ? dirs.peersIn + dirs.peersOut : null)
     const d = syncingRes?.data
     if (!d) {
-        const peersOnly = toNum(peerRes?.data?.connected)
-        if (peersOnly == null) throw new Error('no beacon syncing response')
+        if (peers == null) throw new Error('no beacon syncing response')
         // Syncing curl failed but peers made it - keep them (Prometheus usually covers sync).
-        return { peers: peersOnly }
+        return { peers, ...dirs }
     }
     const syncing = d.is_syncing === true
     const head = toNum(d.head_slot)
@@ -426,8 +517,7 @@ function parseBeacon(jsons) {
     if (head != null && distance != null) {
         syncPct = distance === 0 ? 100 : round1(Math.min(100, (head / (head + distance)) * 100))
     }
-    const peers = toNum(peerRes?.data?.connected)
-    return { syncing, syncPct, head, peers }
+    return { syncing, syncPct, head, peers, ...dirs }
 }
 
 // ── helpers ───────────────────────────────────────────────────────────────

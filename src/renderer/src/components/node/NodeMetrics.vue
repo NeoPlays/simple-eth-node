@@ -112,6 +112,8 @@
                                         {{ service.metric.peers }}<template v-if="service.metric.maxPeers"> / {{ service.metric.maxPeers }}</template>
                                     </template>
                                     <template v-else>-</template>
+                                    <!-- Consensus-only and best-effort: absent whenever the peer listing couldn't be trusted this poll. -->
+                                    <span v-if="service.metric.peersIn != null" class="peer-dirs" :title="peerDirsTitle(service.metric)">↓{{ service.metric.peersIn }} ↑{{ service.metric.peersOut }}</span>
                                 </span>
                             </div>
                         </div>
@@ -228,6 +230,10 @@ function peerLevel(m) {
     if (f >= 0.66) return 'ok'
     if (f >= 0.33) return 'warning'
     return 'danger'
+}
+// Inbound = peers that dialled us (a sign the node is reachable); outbound = peers we dialled.
+function peerDirsTitle(m) {
+    return `${m.peersIn} inbound (dialled us) / ${m.peersOut} outbound (we dialled)`
 }
 function peerFill(m) {
     return { width: `${(peerFraction(m) ?? 0) * 100}%` }
@@ -463,5 +469,10 @@ function bytes(n) {
     white-space: nowrap;
     min-width: 96px;
     text-align: right;
+}
+.peer-dirs {
+    margin-left: var(--space-2);
+    font-size: var(--font-size-micro);
+    color: var(--ev-c-text-3);
 }
 </style>
