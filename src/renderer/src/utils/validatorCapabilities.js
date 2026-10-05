@@ -105,13 +105,13 @@ export function actionHint(action, { row = null, soloEligible = true, graffitiSu
     return action.hint || ''
 }
 
-// beaconcha.in host per network (index-keyed validator page). Unknown networks -> null.
+// Explorer host per network (beaconcha.in-style, index-keyed validator page). Unknown networks -> null.
 const EXPLORER_HOST = {
     mainnet: 'https://beaconcha.in',
     holesky: 'https://holesky.beaconcha.in',
     hoodi: 'https://hoodi.beaconcha.in',
     sepolia: 'https://sepolia.beaconcha.in',
-    gnosis: 'https://gnosischa.in',
+    gnosis: 'https://beaconchain.gnosischain.com',
 }
 
 /** beaconcha.in validator URL for a network + index, or null if either is unknown. */

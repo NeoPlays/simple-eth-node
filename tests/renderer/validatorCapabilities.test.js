@@ -82,6 +82,7 @@ describe('explorerUrl', () => {
     it('maps known networks and is case-insensitive', () => {
         expect(explorerUrl('mainnet', 5)).toBe('https://beaconcha.in/validator/5')
         expect(explorerUrl('HOODI', 5)).toBe('https://hoodi.beaconcha.in/validator/5')
+        expect(explorerUrl('gnosis', 5)).toBe('https://beaconchain.gnosischain.com/validator/5')
     })
     it('returns null without a network or index', () => {
         expect(explorerUrl('nonsense', 5)).toBeNull()
