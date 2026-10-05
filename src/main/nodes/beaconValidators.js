@@ -124,6 +124,7 @@ export const BEACON_ENDPOINT_FLAGS = {
     NimbusValidatorService: ['--beacon-node'],
     LodestarValidatorService: ['--beaconNodes'],
     CharonService: ['--beacon-node-endpoints'],   // its upstream beacons, not the proxy
+    PlutoService: ['--beacon-node-endpoints'],    // Charon-compatible: same flag, same meaning
 }
 
 // From the sidecar container, loopback is the sidecar itself - never a beacon.

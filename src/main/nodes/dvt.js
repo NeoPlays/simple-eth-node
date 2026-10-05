@@ -1,9 +1,15 @@
 /**
  * Distributed-validator (DVT) key reads: pure, unit-testable helpers for surfacing the
  * REAL validator pubkeys of an Obol cluster - which are NOT the share keystores loaded into
- * the VC, but the distributed-validator pubkeys recorded in Charon's cluster-lock.json.
+ * the VC, but the distributed-validator pubkeys recorded in the DVT client's cluster-lock.json.
  *
- * Mirrors stereum's ValidatorAccountManager.getDVTKeys (CharonService case): read
+ * Two clients speak this protocol: Obol's Charon, and Nethermind's Pluto - a Rust
+ * reimplementation of Charon. Upstream `PlutoService extends CharonService`, inheriting its data
+ * dir (/opt/charon) and its `cat <dataDir>/.charon/cluster-lock.json`, and stereum's own
+ * getDVTKeys handles them in one combined `case`. They are treated identically here for the same
+ * reason: on disk they are the same thing.
+ *
+ * Mirrors stereum's ValidatorAccountManager.getDVTKeys (CharonService/PlutoService case): read
  * `<charon-data-dir>/.charon/cluster-lock.json` off the host and take
  * distributed_validators[].distributed_public_key (already 0x-prefixed). The exec side lives
  * in Node.listValidators; everything here is side-effect-free.
@@ -13,12 +19,22 @@
  */
 import { shellQuote } from "@main/nodes/metrics";
 
-// Charon bind-mounts its working dir at this container path; the lockfile sits under it.
+// Both clients bind-mount their working dir at this container path; the lockfile sits under it.
+// Pluto keeps Charon's path (it extends CharonService upstream), so this stays '/opt/charon'
+// for both - it is the container mount point, not a brand name.
 export const CHARON_CONTAINER_DIR = '/opt/charon'
 
-/** Host path of the volume mounted at /opt/charon (Charon's data dir), or undefined. */
+/** Service types that expose an Obol-style cluster-lock.json. */
+export const DVT_SERVICE_TYPES = new Set(['CharonService', 'PlutoService'])
+
+/** Is this service a DVT middleware client (Charon or Pluto)? */
+export function isDvtService(config) {
+    return DVT_SERVICE_TYPES.has(config?.service)
+}
+
+/** Host path of the volume mounted at /opt/charon (the DVT client's data dir), or undefined. */
 export function resolveCharonDataDir(config) {
-    if (config?.service !== 'CharonService') return undefined
+    if (!isDvtService(config)) return undefined
     for (const v of (config?.volumes || [])) {
         const [host, container] = String(v).split(':')
         if (container === CHARON_CONTAINER_DIR && host?.startsWith('/')) return host.replace(/\/+$/, '')
@@ -26,7 +42,7 @@ export function resolveCharonDataDir(config) {
     return undefined
 }
 
-/** `sudo cat <hostDir>/.charon/cluster-lock.json`, or null if the Charon volume is unresolved. */
+/** `sudo cat <hostDir>/.charon/cluster-lock.json`, or null if the DVT volume is unresolved. */
 export function buildClusterLockReadCommand(config) {
     const dir = resolveCharonDataDir(config)
     if (!dir) return null

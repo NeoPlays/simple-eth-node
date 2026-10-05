@@ -1,5 +1,5 @@
 // Client-type categorization mirrored from the launcher's authoritative map (`launcher/src/store/services.js`).
-// Gotchas: Charon (DVT), SSVNetwork and Web3Signer are validator-category middleware; mev-boost, ejector, keys-api and monitoring are "other"; unknown types fall back to other.
+// Gotchas: Charon and Pluto (DVT), SSVNetwork and Web3Signer are validator-category middleware; mev-boost, ejector, keys-api and monitoring are "other"; unknown types fall back to other.
 
 // Category keys in stack order (how an operator reads a setup top to bottom).
 export const CATEGORY_ORDER = ['execution', 'consensus', 'validator', 'other']
@@ -18,10 +18,11 @@ export const SERVICE_CATEGORY = {
     LighthouseBeaconService: 'consensus', PrysmBeaconService: 'consensus', NimbusBeaconService: 'consensus',
     TekuBeaconService: 'consensus', LodestarBeaconService: 'consensus', GrandineBeaconService: 'consensus',
     OpNodeBeaconService: 'consensus', ExternalConsensusService: 'consensus',
-    // validator (incl. middleware: Obol Charon / DVT, SSV network, remote signer)
+    // validator (incl. middleware: Obol Charon + Nethermind Pluto / DVT, SSV network, remote signer)
     LighthouseValidatorService: 'validator', PrysmValidatorService: 'validator', NimbusValidatorService: 'validator',
     TekuValidatorService: 'validator', LodestarValidatorService: 'validator',
-    CharonService: 'validator', SSVNetworkService: 'validator', Web3SignerService: 'validator',
+    CharonService: 'validator', PlutoService: 'validator',
+    SSVNetworkService: 'validator', Web3SignerService: 'validator',
     // everything else (mev-boost, monitoring, ejector, keys-api, ssv dkg/nom, ipfs, ...) -> other
 }
 

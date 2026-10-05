@@ -236,7 +236,7 @@
 
 <script setup>
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { classifyValidatorSetup, SOLO_VC_TYPES, holdsOnChainValidators, isSoloEligible } from '@renderer/utils/validatorSetup'
+import { classifyValidatorSetup, SOLO_VC_TYPES, isDvtType, holdsOnChainValidators, isSoloEligible } from '@renderer/utils/validatorSetup'
 import { capabilityFor, explorerUrl, actionDisabled } from '@renderer/utils/validatorCapabilities'
 import { useValidatorKeys } from '@renderer/composables/useValidatorKeys'
 import { scopeTargets, effectiveScopeOf, scopeCountOf } from '@renderer/utils/validatorScope'
@@ -275,7 +275,7 @@ const ZERO_ADDR = '0x0000000000000000000000000000000000000000'
 
 function roleOf(service, kind) {
     const t = service?.config?.service
-    if (t === 'CharonService') return 'distributed'
+    if (isDvtType(t)) return 'distributed'
     if (t === 'SSVNetworkService') return 'ssv'
     if (t === 'Web3SignerService') return 'signer'
     if (SOLO_VC_TYPES.has(t)) return kind === 'obol' ? 'share' : 'validator'

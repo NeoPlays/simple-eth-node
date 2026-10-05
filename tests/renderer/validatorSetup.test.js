@@ -1,7 +1,16 @@
 import { describe, it, expect } from 'vitest'
-import { classifyValidatorSetup, isSoloEligible, holdsOnChainValidators } from '@renderer/utils/validatorSetup'
+import { classifyValidatorSetup, isSoloEligible, holdsOnChainValidators, isDvtType } from '@renderer/utils/validatorSetup'
 
 const svc = (id, service) => ({ id, config: { service } })
+
+describe('isDvtType', () => {
+    it('covers both DVT clients and nothing else', () => {
+        expect(isDvtType('CharonService')).toBe(true)
+        expect(isDvtType('PlutoService')).toBe(true)
+        expect(isDvtType('LighthouseValidatorService')).toBe(false)
+        expect(isDvtType(undefined)).toBe(false)
+    })
+})
 
 describe('classifyValidatorSetup', () => {
     it('classifies a solo validator setup and points keyHolder at the VC', () => {
@@ -33,6 +42,27 @@ describe('classifyValidatorSetup', () => {
         const r = classifyValidatorSetup([charon, svc('v1', 'TekuValidatorService'), svc('w1', 'Web3SignerService')])
         expect(r.kind).toBe('obol')
         expect(r.keyHolder).toBe(charon)
+    })
+
+    // Nethermind's Pluto is a Rust reimplementation of Charon; upstream it extends CharonService
+    // and stereum reads its cluster-lock.json through the same code path. A Pluto setup must
+    // therefore classify exactly like an Obol one, or its DV pubkeys never get listed.
+    it('classifies a Pluto setup as obol, with Pluto as the keyHolder', () => {
+        const pluto = svc('p1', 'PlutoService')
+        const r = classifyValidatorSetup([pluto, svc('v1', 'LighthouseValidatorService')])
+        expect(r.kind).toBe('obol')
+        expect(r.keyHolder).toBe(pluto)
+        expect(r.charon).toBe(pluto)
+        expect(r.clients).toContain(pluto)
+    })
+
+    it('treats a VC behind Pluto as a share holder, never as solo', () => {
+        const vc = svc('v1', 'LighthouseValidatorService')
+        const r = classifyValidatorSetup([svc('p1', 'PlutoService'), vc])
+        // kind 'obol' is what makes roleOf() report 'share' for the VC, gating every mutation off.
+        expect(r.kind).toBe('obol')
+        expect(r.keyHolder).not.toBe(vc)
+        expect(holdsOnChainValidators('share', r.kind)).toBe(false)
     })
 
     it('classifies an SSV setup and takes precedence over everything else', () => {

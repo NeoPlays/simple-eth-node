@@ -17,7 +17,14 @@ export const SOLO_VC_TYPES = new Set([
     'LighthouseValidatorService', 'PrysmValidatorService', 'NimbusValidatorService',
     'TekuValidatorService', 'LodestarValidatorService',
 ])
+// Obol's Charon and Nethermind's Pluto both speak the same DVT protocol - upstream
+// `PlutoService extends CharonService`, sharing its data dir and cluster-lock.json - so a setup
+// fronted by either is the same 'obol' kind here. CHARON_TYPE stays exported for callers that
+// mean Charon specifically.
 export const CHARON_TYPE = 'CharonService'
+export const PLUTO_TYPE = 'PlutoService'
+export const DVT_TYPES = new Set([CHARON_TYPE, PLUTO_TYPE])
+export const isDvtType = (t) => DVT_TYPES.has(t)
 export const SSV_TYPE = 'SSVNetworkService'
 export const WEB3SIGNER_TYPE = 'Web3SignerService'
 
@@ -36,12 +43,12 @@ export function classifyValidatorSetup(services = []) {
     const typeOf = (s) => s?.config?.service
     const find = (t) => services.find((s) => typeOf(s) === t) || null
 
-    const charon = find(CHARON_TYPE)
+    const charon = services.find((s) => isDvtType(typeOf(s))) || null
     const ssv = find(SSV_TYPE)
     const web3signer = find(WEB3SIGNER_TYPE)
     const vcs = services.filter((s) => SOLO_VC_TYPES.has(typeOf(s)))
     const clients = services.filter((s) =>
-        SOLO_VC_TYPES.has(typeOf(s)) || typeOf(s) === CHARON_TYPE || typeOf(s) === SSV_TYPE || typeOf(s) === WEB3SIGNER_TYPE)
+        SOLO_VC_TYPES.has(typeOf(s)) || isDvtType(typeOf(s)) || typeOf(s) === SSV_TYPE || typeOf(s) === WEB3SIGNER_TYPE)
 
     // Precedence: ssv > obol > remote-signer > solo. A setup can contain several (e.g. Obol
     // fronts a real VC that holds shares) - the outermost paradigm wins so we never treat a

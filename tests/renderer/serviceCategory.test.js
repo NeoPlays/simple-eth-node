@@ -10,8 +10,9 @@ describe('serviceCategory', () => {
         expect(serviceCategory('LighthouseValidatorService')).toBe('validator')
     })
 
-    it('treats Charon, SSVNetwork and Web3Signer as validator middleware', () => {
+    it('treats Charon, Pluto, SSVNetwork and Web3Signer as validator middleware', () => {
         expect(serviceCategory('CharonService')).toBe('validator')
+        expect(serviceCategory('PlutoService')).toBe('validator')
         expect(serviceCategory('SSVNetworkService')).toBe('validator')
         expect(serviceCategory('Web3SignerService')).toBe('validator')
     })

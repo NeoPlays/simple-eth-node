@@ -27,7 +27,7 @@ import {
     KEYSTORES_PATH, DELETE_OK_STATUSES, parseDeleteKeystoresResponse,
     deleteErrors, deleteNotFound, protectionCoversAll,
 } from "@main/nodes/keymanager";
-import { buildClusterLockReadCommand, parseClusterLock } from "@main/nodes/dvt";
+import { buildClusterLockReadCommand, parseClusterLock, isDvtService } from "@main/nodes/dvt";
 import { validateInterchange } from "@main/nodes/slashingProtection";
 import {
     epochFromSlot, exitEligibility, parseSignedExit, exitBroadcastBody,
@@ -308,11 +308,12 @@ export class Node {
         const raw = await this.fetchRawServiceConfig(serviceId)
         const config = YAML.parse(raw)
 
-        // Obol: the real distributed-validator pubkeys come from Charon's cluster-lock.json
-        // (read off the host), NOT the VC's share keystores. Matches stereum's getDVTKeys.
-        if (config.service === 'CharonService') {
+        // Obol: the real distributed-validator pubkeys come from the DVT client's cluster-lock.json
+        // (read off the host), NOT the VC's share keystores. Matches stereum's getDVTKeys, which
+        // handles CharonService and PlutoService in one combined case.
+        if (isDvtService(config)) {
             const cmd = buildClusterLockReadCommand(config)
-            if (!cmd) return { ok: false, error: 'Could not resolve the Charon data directory', keys: [] }
+            if (!cmd) return { ok: false, error: 'Could not resolve the DVT client data directory', keys: [] }
             const res = await this.sshService.exec(cmd)
             if (res.rc !== 0 && res.rc !== null) return { ok: false, error: 'Could not read cluster-lock.json (is the cluster set up?)', keys: [] }
             return { ok: true, keys: parseClusterLock(res.stdout) }

@@ -12,6 +12,7 @@
  * is general (method/path/body) so later phases (import/remove/exit) reuse it behind gates.
  */
 import { CURL_IMAGE, STEREUM_DOCKER_NETWORK } from "@main/nodes/metrics";
+import { isDvtService } from "@main/nodes/dvt";
 
 // Per stereum service type: internal port, scheme, whether curl must skip TLS verify (Teku
 // serves the validator API over self-signed HTTPS), the command flag(s) that ENABLE the API
@@ -78,11 +79,11 @@ export function keymanagerCapable(config) {
 
 /**
  * Whether the Validators tab can list keys for this service at all: either via the keymanager
- * API (VCs + Web3Signer), or via Charon's cluster-lock.json (Obol distributed validators).
+ * API (VCs + Web3Signer), or via a DVT client's cluster-lock.json (Charon / Pluto).
  * (SSV lists via the external api.ssv.network and is not yet wired, so it's excluded here.)
  */
 export function validatorListable(config) {
-    return keymanagerInfo(config).capable || config?.service === 'CharonService'
+    return keymanagerInfo(config).capable || isDvtService(config)
 }
 
 /** First value of `--flag=value` / `--flag value` among flagNames in the command, else undefined. */

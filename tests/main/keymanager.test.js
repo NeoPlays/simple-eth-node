@@ -3,6 +3,7 @@ import {
     KEYMANAGER_REGISTRY,
     keymanagerInfo,
     keymanagerCapable,
+    validatorListable,
     keymanagerTarget,
     keymanagerUrl,
     buildCurlConfig,
@@ -450,5 +451,28 @@ describe('isValidPubkey', () => {
         expect(isValidPubkey('../../secret')).toBe(false)
         expect(isValidPubkey('')).toBe(false)
         expect(isValidPubkey(null)).toBe(false)
+    })
+})
+
+describe('validatorListable', () => {
+    // The gate that decides whether the Validators tab tries to list a service at all. Two routes
+    // qualify: a keymanager API, or a DVT client's cluster-lock.json.
+    it('accepts a validator client whose keymanager API is switched on', () => {
+        expect(validatorListable({ service: 'LighthouseValidatorService', command: ['--http'] })).toBe(true)
+    })
+    it('rejects a known validator client with the API switched off', () => {
+        expect(validatorListable({ service: 'LighthouseValidatorService', command: [] })).toBe(false)
+    })
+    it('accepts both DVT clients via their cluster-lock.json', () => {
+        expect(validatorListable({ service: 'CharonService' })).toBe(true)
+        // Pluto reimplements Charon and keeps its lockfile, so excluding it here would leave a
+        // Pluto cluster's Validators tab permanently empty with no error to explain why.
+        expect(validatorListable({ service: 'PlutoService' })).toBe(true)
+    })
+    it('rejects services with neither route', () => {
+        for (const service of ['GethService', 'FlashbotsMevBoostService', 'SSVNetworkService', undefined]) {
+            expect(validatorListable({ service })).toBe(false)
+        }
+        expect(validatorListable(null)).toBe(false)
     })
 })
