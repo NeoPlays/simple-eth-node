@@ -59,7 +59,7 @@
                                 <span class="arrow">→</span>
                                 <span class="latest">{{ controlsInfo.latestVersion }}</span>
                             </span>
-                            <span v-else-if="controlsInfo.version">· up to date</span>
+                            <span v-else-if="controlsInfo.version">, up to date</span>
                         </span>
                         <span v-else-if="controlsError" class="muted error">{{ controlsError }}</span>
                         <span v-else class="muted">checking…</span>
@@ -99,7 +99,7 @@
                                     {{ serviceUpdate(service).current }} <span class="arrow">→</span>
                                     <span class="latest">{{ serviceUpdate(service).latest }}</span>
                                 </span>
-                                <span v-else-if="manifest" class="muted mono">{{ serviceUpdate(service).current ?? service.config?.image ?? '-' }} · up to date</span>
+                                <span v-else-if="manifest" class="muted mono">{{ serviceUpdate(service).current ?? service.config?.image ?? '-' }}, up to date</span>
                                 <span v-else class="muted">checking…</span>
                             </div>
                             <div class="host-actions">

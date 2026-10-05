@@ -17,7 +17,7 @@
                     <div class="bar"><div class="bar-fill" :class="level(system.cpu.usagePct)" :style="fill(system.cpu.usagePct)"></div></div>
                     <span class="meter-sub mono">
                         {{ system.cpu.cores != null ? system.cpu.cores + ' cores' : '' }}
-                        {{ system.cpu.load1 != null ? '· load ' + system.cpu.load1 : '' }}
+                        {{ system.cpu.load1 != null ? ', load ' + system.cpu.load1 : '' }}
                     </span>
                 </div>
 
@@ -56,7 +56,7 @@
                     >
                         <div class="disk-tooltip" v-if="hovered === seg.key">
                             <strong>{{ seg.label }}</strong>
-                            <span class="mono">{{ bytes(seg.bytes) }} · {{ seg.pct }}% of disk</span>
+                            <span class="mono">{{ bytes(seg.bytes) }}, {{ seg.pct }}% of disk</span>
                         </div>
                     </div>
                 </div>

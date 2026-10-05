@@ -224,7 +224,7 @@ const failures = computed(() => submitted.value
 
 function reasonText(check) {
     const reasons = check?.reasons || []
-    if (reasons.length) return reasons.join(' · ')
+    if (reasons.length) return reasons.join(', ')
     return 'Eligibility could not be confirmed'
 }
 

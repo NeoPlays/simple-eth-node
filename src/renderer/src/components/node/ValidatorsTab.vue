@@ -449,7 +449,7 @@ const rangeLabel = computed(() => {
 const eyebrow = computed(() => {
     const parts = ['Node manager']
     const s = activeHolder.value?.setup
-    if (s?.name) parts.push(s.network ? `${s.name} · ${s.network}` : s.name)
+    if (s?.name) parts.push(s.network ? `${s.name}, ${s.network}` : s.name)
     return parts.join(' / ')
 })
 
@@ -457,9 +457,9 @@ function shortName(service) { return (service?.config?.service ?? service?.id ??
 function countFor(h) {
     const s = state(h.service.id)
     if (s.loading) return '…'
-    return h.key === activeKey.value || s.keys.length ? String(s.keys.length) : (h.listable ? '·' : '—')
+    return h.key === activeKey.value || s.keys.length ? String(s.keys.length) : (h.listable ? '-' : 'n/a')
 }
-function countText(v) { return v == null ? '—' : String(v) }
+function countText(v) { return v == null ? '-' : String(v) }
 function facetDisabled(f) { return f.key !== 'All' && (!statsApplicable.value || !statusKnown.value) }
 function facetCount(f) {
     if (f.key === 'All') return countText(counts.value.All)

@@ -30,16 +30,16 @@
                         <svg v-if="selected.has(row.pubkey)" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12l5 5 9-11" /></svg>
                     </span>
                 </div>
-                <div class="cell cell-index mono">{{ row.index ?? '—' }}</div>
+                <div class="cell cell-index mono">{{ row.index ?? '-' }}</div>
                 <div class="cell cell-key mono">{{ shortKey(row.pubkey) }}</div>
                 <div class="cell cell-status">
                     <template v-if="statsApplicable">
                         <span class="dot" :style="{ background: STATUS_COLOR[row.status] || 'var(--ev-c-gray-1)' }"></span>
-                        <span :style="{ color: STATUS_COLOR[row.status] || 'var(--ev-c-text-3)' }">{{ STATUS_LABEL[row.status] || '—' }}</span>
+                        <span :style="{ color: STATUS_COLOR[row.status] || 'var(--ev-c-text-3)' }">{{ STATUS_LABEL[row.status] || '-' }}</span>
                     </template>
                     <span v-else class="muted">n/a</span>
                 </div>
-                <div class="cell cell-right cell-balance mono" :class="{ muted: !statsApplicable }">{{ !statsApplicable ? 'n/a' : (row.balance != null ? Number(row.balance).toFixed(3) : '—') }}</div>
+                <div class="cell cell-right cell-balance mono" :class="{ muted: !statsApplicable }">{{ !statsApplicable ? 'n/a' : (row.balance != null ? Number(row.balance).toFixed(3) : '-') }}</div>
                 <div class="cell cell-withdrawal">
                     <span v-if="statsApplicable && row.withdrawalType" class="wpill mono" :class="{ warn: row.withdrawalType === '0x01' || row.withdrawalType === '0x00' }">{{ row.withdrawalType }}</span>
                     <span v-else class="mono muted">{{ statsApplicable ? '—' : 'n/a' }}</span>

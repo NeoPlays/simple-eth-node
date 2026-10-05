@@ -21,7 +21,7 @@
                     <label class="field-label" for="resync-source">Checkpoint sync source</label>
                     <select id="resync-source" v-model="selection" class="source-select" @change="onSelectionChange">
                         <option value="genesis">Genesis - sync from block 0 (slow)</option>
-                        <optgroup v-if="providers.length" :label="`Checkpoint providers · ${networkLabel}`">
+                        <optgroup v-if="providers.length" :label="`Checkpoint providers, ${networkLabel}`">
                             <option v-for="p in providers" :key="p.url" :value="p.url">{{ p.name }}</option>
                         </optgroup>
                         <option value="custom">Custom URL…</option>

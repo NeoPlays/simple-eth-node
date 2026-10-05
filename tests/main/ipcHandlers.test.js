@@ -534,7 +534,7 @@ describe('ipcHandlers', () => {
             fakeNodeManager.findNode.mockReturnValueOnce({ ...fakeNode, name: 'prod-1' })
             const r = handlers['run-node-task'](event, 'n1', 'start-service', ['svc'])
             expect(fakeTaskManager.run).toHaveBeenCalledWith(
-                expect.stringContaining('Start service · prod-1'),
+                expect.stringContaining('Start service, prod-1'),
                 expect.any(Function),
                 { nodeId: 'n1' },
             )

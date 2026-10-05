@@ -151,7 +151,7 @@ export function initializeIpcHandlers() {
         if (!node) throw new Error('Node not found')
         const spec = NODE_TASK_ACTIONS[action]
         if (!spec) throw new Error(`Unknown task action: ${action}`)
-        const label = `${spec.label(args)} · ${nodeLabel(node)}`
+        const label = `${spec.label(args)}, ${nodeLabel(node)}`
         const taskId = taskManager.run(label, () => spec.run(node, args), { nodeId })
         return { taskId }
     });

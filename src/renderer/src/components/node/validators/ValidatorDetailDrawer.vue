@@ -22,9 +22,9 @@
                         <div class="fact"><span class="fact-label">Balance</span><span class="fact-value mono">{{ eth(validator.balance) }}</span></div>
                         <div class="fact"><span class="fact-label">Effective balance</span><span class="fact-value mono">{{ eth(validator.effectiveBalance) }}</span></div>
                         <div class="fact"><span class="fact-label">Withdrawal creds</span><span class="fact-value mono">{{ withdrawalText(validator.withdrawalType) }}</span></div>
-                        <div class="fact"><span class="fact-label">Activation epoch</span><span class="fact-value mono">{{ validator.activationEpoch ?? '—' }}</span></div>
-                        <div class="fact"><span class="fact-label">Fee recipient</span><span class="fact-value mono">{{ validator.feeRecipient || '—' }}</span></div>
-                        <div class="fact"><span class="fact-label">Graffiti</span><span class="fact-value mono">{{ validator.graffiti || '—' }}</span></div>
+                        <div class="fact"><span class="fact-label">Activation epoch</span><span class="fact-value mono">{{ validator.activationEpoch ?? '-' }}</span></div>
+                        <div class="fact"><span class="fact-label">Fee recipient</span><span class="fact-value mono">{{ validator.feeRecipient || '-' }}</span></div>
+                        <div class="fact"><span class="fact-label">Graffiti</span><span class="fact-value mono">{{ validator.graffiti || '-' }}</span></div>
                     </div>
 
                     <div v-if="actions.length" class="drawer-actions">
@@ -63,14 +63,14 @@ const STATUS_COLOR = { Active: 'var(--color-success)', Pending: 'var(--color-war
 const STATUS_LABEL = { Active: 'Active', Pending: 'Pending', Exited: 'Exited', Slashed: 'Slashed' }
 
 function eth(gweiOrEth) {
-    if (gweiOrEth == null) return '—'
+    if (gweiOrEth == null) return '-'
     return `${Number(gweiOrEth).toFixed(3)} ETH`
 }
 function withdrawalText(type) {
     if (type === '0x02') return '0x02 (compounding)'
     if (type === '0x01') return '0x01 (execution)'
     if (type === '0x00') return '0x00 (BLS)'
-    return '—'
+    return '-'
 }
 function gateCtx() {
     return { row: props.validator, soloEligible: props.soloEligible, graffitiSupported: props.graffitiSupported }

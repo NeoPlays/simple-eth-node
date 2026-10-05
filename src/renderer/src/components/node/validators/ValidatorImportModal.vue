@@ -280,7 +280,7 @@ async function pickKeystores() {
         }
         files.value.push(parsed)
     }
-    fileError.value = errors.join(' · ')
+    fileError.value = errors.join(', ')
 }
 
 function removeFile(pubkey) {

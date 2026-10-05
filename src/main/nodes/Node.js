@@ -1035,9 +1035,9 @@ export class Node {
             const svc = stereumArgs.manage_service || {}
             const verb = { started: 'Start', stopped: 'Stop', restarted: 'Restart' }[svc.state] || 'Manage'
             const id = svc.configuration?.id
-            return id ? `${verb} service · ${id.slice(0, 8)}` : `${verb} service`
+            return id ? `${verb} service, ${id.slice(0, 8)}` : `${verb} service`
         }
-        if (role === 'update-package') return `Update package · ${stereumArgs.update_package?.name || ''}`.trim()
+        if (role === 'update-package') return `Update package, ${stereumArgs.update_package?.name || ''}`.trim()
         return {
             'update-services': 'Update services',
             'update-stereum': 'Update controls',
