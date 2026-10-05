@@ -39,7 +39,7 @@ const A = {
 const CAPABILITIES = {
     validator: {
         rowActions: [A.setFeeRecipient, A.setGraffiti, A.copyPubkey, A.viewBeaconcha, A.exitValidator, A.removeKey],
-        scopeActions: [A.setFeeRecipient, A.setGraffiti, A.exportCsv, A.exitValidators, A.removeKeys],
+        scopeActions: [A.copyPubkeys, A.setFeeRecipient, A.setGraffiti, A.exportCsv, A.exitValidators, A.removeKeys],
         drawerActions: [A.setFeeRecipient, A.setGraffiti, A.copyPubkey, A.exitValidator, A.removeKey],
         note: 'Validator keys held by this {client} instance. Fee recipient and graffiti apply immediately; exits and key removal are irreversible on this node.',
     },
