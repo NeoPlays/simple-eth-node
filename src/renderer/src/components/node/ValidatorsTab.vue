@@ -256,6 +256,7 @@
                 v-if="removeModal"
                 :pubkeys="removeModal.pubkeys"
                 :client-name="shortName(activeService)"
+                :network="network"
                 @close="closeRemoveModal"
                 @remove="applyRemove"
                 @save="saveProtection"
