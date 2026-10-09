@@ -775,7 +775,9 @@ function openRemoveModal(targets) {
 async function applyRemove({ done }) {
     let res
     try {
-        res = await window.api.invoke('delete-validator-keys', props.nodeId, activeService.value.id, removeModal.value.pubkeys)
+        // Spread into a plain array: removeModal is a ref, so its pubkeys are a reactive Proxy, which
+        // Electron's IPC cannot clone ("An object could not be cloned").
+        res = await window.api.invoke('delete-validator-keys', props.nodeId, activeService.value.id, [...removeModal.value.pubkeys])
     } catch (e) {
         res = { ok: false, error: e?.message || 'The removal failed' }
     }
@@ -864,7 +866,7 @@ async function applySetting({ value, done }) {
     const channel = m.kind === 'graffiti' ? 'set-graffiti' : 'set-fee-recipient'
     let res
     try {
-        res = await window.api.invoke(channel, props.nodeId, activeService.value.id, m.pubkeys, value)
+        res = await window.api.invoke(channel, props.nodeId, activeService.value.id, [...m.pubkeys], value)   // plain copy, see applyRemove
     } catch (e) {
         res = { ok: false, error: e?.message || 'The update failed' }
     }

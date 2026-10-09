@@ -91,7 +91,7 @@ src/
 
 ## IPC Channels
 
-New channels must be added to **both** `ipcHandlers.js` and `ipcChannelWhitelist.js`. Push events (main → renderer) live in the `allowedEvents` array and are subscribed via `window.api.on(channel, listener)`.
+New channels must be added to **both** `ipcHandlers.js` and `ipcChannelWhitelist.js`. **Never pass reactive data to `window.api.invoke`**: a `ref`/`reactive` object or array (e.g. `someModal.value.pubkeys`) is a Proxy, which Electron cannot structured-clone, and the call fails with "An object could not be cloned" before reaching the preload. Pass a plain copy (`[...arr]`, `{ ...obj }`, or a freshly `map`ped array). Push events (main → renderer) live in the `allowedEvents` array and are subscribed via `window.api.on(channel, listener)`.
 
 | Channel                                              | Args                             | Returns                                                                                                                        |
 | ---------------------------------------------------- | -------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
