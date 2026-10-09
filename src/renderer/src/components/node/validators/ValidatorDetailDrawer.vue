@@ -20,6 +20,10 @@
                     <div v-else class="pubkey-block mono" @click="copy(validator.pubkey)" :title="'Click to copy'">{{ validator.pubkey }}</div>
 
                     <div class="facts">
+                        <!-- Onboarding: deposit queue / activation queue, with the estimate. -->
+                        <div v-if="detail" class="fact wide">
+                            <span class="fact-label">{{ detail.short }}</span><span class="fact-value prose">{{ detail.long }}</span>
+                        </div>
                         <!-- Remote Charon: a DV names this operator's share, a share names its DV. -->
                         <div v-if="validator.share" class="fact wide">
                             <span class="fact-label">Key share (this operator)</span><span class="fact-value mono">{{ validator.share }}</span>
@@ -56,8 +60,9 @@
 </template>
 
 <script setup>
-import { onMounted, onUnmounted } from 'vue'
+import { computed, onMounted, onUnmounted } from 'vue'
 import { actionDisabled, actionHint } from '@renderer/utils/validatorCapabilities'
+import { statusDetail } from '@renderer/utils/validatorStatus'
 
 const props = defineProps({
     validator: { type: Object, required: true },
@@ -65,6 +70,7 @@ const props = defineProps({
     soloEligible: { type: Boolean, default: false },
     graffitiSupported: { type: Boolean, default: true },
 })
+const detail = computed(() => statusDetail(props.validator))
 const emit = defineEmits(['close', 'action'])
 
 const STATUS_COLOR = { Active: 'var(--color-success)', Pending: 'var(--color-warning)', Exited: 'var(--ev-c-text-3)', Slashed: 'var(--color-danger)' }
@@ -171,6 +177,8 @@ onUnmounted(() => window.removeEventListener('keydown', onKey))
 .fact-value { font-size: var(--font-size-secondary); color: var(--ev-c-text-1); word-break: break-all; }
 /* A full 98-char pubkey needs the whole row, not half the grid. */
 .fact.wide { grid-column: 1 / -1; }
+/* Sentences wrap at words; only keys and addresses may break anywhere. */
+.fact-value.prose { word-break: normal; overflow-wrap: break-word; line-height: 1.6; }
 
 .drawer-actions { display: flex; flex-direction: column; gap: var(--space-2); }
 .drawer-actions .eyebrow { margin-bottom: var(--space-1); }

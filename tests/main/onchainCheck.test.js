@@ -63,7 +63,12 @@ describe('onchainVerdicts', () => {
         expect(r[C]).toMatchObject({ verdict: 'active', signedIn: [98] })
         expect(r[D].verdict).toBe('pending')
         expect(r[E].verdict).toBe('not-on-chain')
-        expect(summarizeVerdicts(r)).toEqual({ active: 2, inactive: 1, 'not-on-chain': 1, pending: 1, unknown: 0 })
+        expect(summarizeVerdicts(r)).toEqual({ active: 2, inactive: 1, 'deposit-queued': 0, 'not-on-chain': 1, pending: 1, unknown: 0 })
+    })
+
+    it('tells a queued deposit apart from a key with no deposit at all', () => {
+        const queued = { '0xq': { index: null, status: 'Pending', rawStatus: 'deposit_queued', depositQueue: { position: 913, length: 942 } } }
+        expect(onchainVerdicts(['0xq'], queued, parseOnchainCheck(''), epochs)['0xq']).toMatchObject({ verdict: 'deposit-queued', depositQueue: { position: 913 } })
     })
 
     it('never reads a failed epoch as "did not sign"', () => {

@@ -1660,6 +1660,29 @@ describe('Node', () => {
             expect(resolve).not.toHaveBeenCalled()
         })
 
+        it('looks up keys the validators route does not know in the deposit queue', async () => {
+            const PK_Q = '0x' + 'c'.repeat(96)
+            vi.spyOn(node, '_resolveBeaconBase').mockResolvedValue({ base: 'http://beacon:3500', source: 'node' })
+            node.sshService.exec = vi.fn(async (cmd) => (cmd.includes('pending_deposits')
+                ? ok(`===DQ_HTTP===200\nMATCH ${PK_Q} 913 32000000000 4110760 2058500000000\nTOTAL 942 3270500000000\n===DQ_SPEC===\n"MAX_PENDING_DEPOSITS_PER_EPOCH":"16"\n`)
+                : ok(RESPONSE)))
+            const r = await node.getValidatorStates([PK_A, PK_Q])
+            expect(r.states[PK_A].index).toBe(7)
+            expect(r.states[PK_Q]).toMatchObject({ index: null, rawStatus: 'deposit_queued', depositQueue: { position: 913, length: 942, etaEpochs: 58 } })
+            expect(r.depositQueue).toEqual({ length: 942, totalEth: 3270.5 })
+            // only the unknown key was looked up
+            const dq = node.sshService.exec.mock.calls.map((c) => c[0]).find((c) => c.includes('pending_deposits'))
+            expect(dq).toContain(PK_Q)
+            expect(dq).not.toContain(PK_A)
+        })
+
+        it('skips the deposit queue when every key has a validator', async () => {
+            vi.spyOn(node, '_resolveBeaconBase').mockResolvedValue({ base: 'http://beacon:3500', source: 'node' })
+            node.sshService.exec = vi.fn(async () => ok(RESPONSE))
+            await node.getValidatorStates([PK_A])
+            expect(node.sshService.exec).toHaveBeenCalledTimes(1)
+        })
+
         it('errors naming all three sources when none resolves', async () => {
             vi.spyOn(node, '_resolveBeaconBase').mockResolvedValue({ base: null, source: null })
             const r = await node.getValidatorStates([PK_A])

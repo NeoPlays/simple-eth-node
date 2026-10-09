@@ -24,7 +24,8 @@ const A = {
     setGraffiti:     { id: 'setGraffiti', label: 'Set graffiti', mutating: true, implemented: true, needsGraffiti: true },
     copyPubkey:      { id: 'copyPubkey', label: 'Copy full pubkey' },
     copyPubkeys:     { id: 'copyPubkeys', label: 'Copy pubkeys' },
-    viewBeaconcha:   { id: 'viewBeaconcha', label: 'View on beaconcha.in', hint: 'open', needsIndex: true },
+    // No index needed: the explorer also resolves a pubkey, including one whose deposit is still queued.
+    viewBeaconcha:   { id: 'viewBeaconcha', label: 'View on beaconcha.in', hint: 'open' },
     exportCsv:       { id: 'exportCsv', label: 'Export CSV' },
     exitValidator:   { id: 'exitValidator', label: 'Exit validator', danger: true, mutating: true, implemented: true, hint: 'irreversible' },
     removeKey:       { id: 'removeKey', label: 'Remove key', danger: true, mutating: true, implemented: true, hint: 'keeps validator active' },
@@ -114,8 +115,12 @@ const EXPLORER_HOST = {
     gnosis: 'https://beaconchain.gnosischain.com',
 }
 
-/** beaconcha.in validator URL for a network + index, or null if either is unknown. */
-export function explorerUrl(network, index) {
+/**
+ * Explorer validator URL for a network + validator id (pubkey or index), or null if either is
+ * unknown. Pass the pubkey when there is one: it resolves before the validator has an index (a
+ * deposit still in the queue), where an index does not exist yet.
+ */
+export function explorerUrl(network, id) {
     const host = EXPLORER_HOST[String(network || '').toLowerCase()]
-    return host && index != null ? `${host}/validator/${index}` : null
+    return host && id != null && id !== '' ? `${host}/validator/${id}` : null
 }

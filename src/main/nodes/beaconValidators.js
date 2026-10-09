@@ -48,6 +48,9 @@ export function withdrawalType(creds) {
 }
 
 const gweiToEth = (g) => (g == null ? null : Number(g) / 1e9)
+// FAR_FUTURE_EPOCH (2^64 - 1) is the spec's "not scheduled"; shown as a number it reads as a date.
+const FAR_FUTURE_EPOCH = '18446744073709551615'
+const epochOrNull = (e) => (e == null || String(e) === FAR_FUTURE_EPOCH ? null : e)
 
 /** Map one raw beacon `data[]` element to our stat shape (pubkey lowercased). */
 export function toValidatorStat(raw) {
@@ -63,7 +66,10 @@ export function toValidatorStat(raw) {
         balance: gweiToEth(raw?.balance),
         effectiveBalance: gweiToEth(v.effective_balance),
         withdrawalType: withdrawalType(v.withdrawal_credentials),
-        activationEpoch: v.activation_epoch ?? null,
+        activationEpoch: epochOrNull(v.activation_epoch),
+        // Set once the deposit is processed (pending_queued); with activationEpoch null it means
+        // "in the activation queue, not scheduled yet".
+        activationEligibilityEpoch: epochOrNull(v.activation_eligibility_epoch),
     }
 }
 

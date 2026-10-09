@@ -38,8 +38,12 @@
                 </div>
                 <div class="cell cell-status">
                     <template v-if="statsApplicable">
-                        <span class="dot" :style="{ background: STATUS_COLOR[row.status] || 'var(--ev-c-gray-1)' }"></span>
-                        <span :style="{ color: STATUS_COLOR[row.status] || 'var(--ev-c-text-3)' }">{{ STATUS_LABEL[row.status] || '-' }}</span>
+                        <span class="status-main">
+                            <span class="dot" :style="{ background: STATUS_COLOR[row.status] || 'var(--ev-c-gray-1)' }"></span>
+                            <span :style="{ color: STATUS_COLOR[row.status] || 'var(--ev-c-text-3)' }">{{ STATUS_LABEL[row.status] || '-' }}</span>
+                        </span>
+                        <!-- Where a not-yet-active key is: deposit queue, activation queue, scheduled. -->
+                        <span v-if="statusDetail(row)" class="status-detail" :title="statusDetail(row).long">{{ statusDetail(row).short }}</span>
                     </template>
                     <span v-else class="muted">n/a</span>
                 </div>
@@ -63,7 +67,7 @@
                     <button class="iconbtn" title="Copy pubkey" @click="emit('copy', row)">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V5a2 2 0 0 1 2-2h10" /></svg>
                     </button>
-                    <button class="iconbtn" title="View on beaconcha.in" :disabled="row.index == null" @click="emit('explorer', row)">
+                    <button class="iconbtn" title="View on beaconcha.in" :disabled="row.pubkeyUnknown && row.index == null" @click="emit('explorer', row)">
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7M17 7H8M17 7v9" /></svg>
                     </button>
                     <button class="iconbtn" title="More" :class="{ active: menuPubkey === row.pubkey }" @click="toggleMenu(row, $event)">
@@ -118,6 +122,7 @@
 <script setup>
 import { ref, computed, watch, onUnmounted } from 'vue'
 import { actionDisabled, actionHint } from '@renderer/utils/validatorCapabilities'
+import { statusDetail } from '@renderer/utils/validatorStatus'
 import { formatDateTime, formatTime } from '@renderer/utils/datetime'
 import { useLocale } from '@renderer/composables/useLocale'
 
@@ -237,7 +242,9 @@ onUnmounted(closeMenu)
 .cell-index { color: var(--ev-c-text-3); overflow: visible; text-overflow: clip; }
 .cell-key { color: var(--ev-c-text-1); }
 .key-unknown { font-family: var(--font-sans); color: var(--ev-c-text-3); font-style: italic; }
-.cell-status { display: flex; align-items: center; gap: var(--space-2); }
+.cell-status { display: flex; flex-direction: column; justify-content: center; gap: 1px; min-width: 0; }
+.status-main { display: flex; align-items: center; gap: var(--space-2); }
+.status-detail { font-size: var(--font-size-micro); color: var(--ev-c-text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .cell-actions { display: flex; align-items: center; justify-content: flex-end; gap: 2px; }
 .dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
 .muted { color: var(--ev-c-text-3); }

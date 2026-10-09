@@ -122,7 +122,8 @@ export function rewardSignal(r) {
  * Per pubkey: did it sign in the checked window?
  *   'active'        signed in at least one checked epoch - block the import
  *   'inactive'      on chain, every checked epoch answered, no signature
- *   'not-on-chain'  the beacon has no validator for this pubkey (never deposited, or not yet seen)
+ *   'deposit-queued' deposited, waiting in pending_deposits - no validator exists yet
+ *   'not-on-chain'  the beacon has no validator and no queued deposit for this pubkey
  *   'pending'       deposited but not yet active - it cannot have signed
  *   'unknown'       could not be checked for at least one epoch and nothing showed activity
  * @param {{ [pubkey]: { index, status } }} states - from parseBeaconStates (pubkeys lowercased)
@@ -133,6 +134,7 @@ export function onchainVerdicts(pubkeys = [], states = {}, parsed = { liveness: 
     const out = {}
     for (const pk of pubkeys) {
         const s = states[String(pk).toLowerCase()]
+        if (s?.rawStatus === 'deposit_queued') { out[pk] = { verdict: 'deposit-queued', depositQueue: s.depositQueue, signedIn: [], uncheckedEpochs: [] }; continue }
         if (!s || s.index == null) { out[pk] = { verdict: 'not-on-chain', signedIn: [], uncheckedEpochs: [] }; continue }
         if (s.status === 'Pending') { out[pk] = { verdict: 'pending', index: s.index, signedIn: [], uncheckedEpochs: [] }; continue }
         const idx = String(s.index)
@@ -162,7 +164,7 @@ export function onchainVerdicts(pubkeys = [], states = {}, parsed = { liveness: 
 
 /** Counts per verdict, for the summary line. */
 export function summarizeVerdicts(results = {}) {
-    const counts = { active: 0, inactive: 0, 'not-on-chain': 0, pending: 0, unknown: 0 }
+    const counts = { active: 0, inactive: 0, 'deposit-queued': 0, 'not-on-chain': 0, pending: 0, unknown: 0 }
     for (const r of Object.values(results)) if (r?.verdict in counts) counts[r.verdict]++
     return counts
 }

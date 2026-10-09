@@ -476,6 +476,10 @@ const rows = computed(() => {
             share: k.share ?? null,
             // DV whose pubkey could not be looked up: keyed `index:<n>`, never copied or exported as a key.
             pubkeyUnknown: Boolean(k.pubkeyUnknown),
+            // Onboarding detail for not-yet-active keys (see utils/validatorStatus.js).
+            rawStatus: s?.rawStatus ?? null,
+            depositQueue: s?.depositQueue ?? null,
+            activationEligibilityEpoch: s?.activationEligibilityEpoch ?? null,
             dvPubkey: dvByShare.value[String(k.pubkey || '').toLowerCase()] ?? null,
             index: s?.index ?? null, status: s?.status ?? null, slashed: s?.slashed ?? false,
             balance: s?.balance ?? null, effectiveBalance: s?.effectiveBalance ?? null,
@@ -740,7 +744,8 @@ function isActionDisabled(a, row) {
     return actionDisabled(a, { row, soloEligible: soloEligible.value, graffitiSupported: graffitiSupported.value })
 }
 function copyPubkey(pubkey) { if (pubkey && !pubkey.startsWith('index:')) navigator.clipboard?.writeText(pubkey) }
-function openExplorer(row) { const url = explorerUrl(network.value, row.index); if (url) window.open(url, '_blank') }
+// Pubkey first (it works before an index exists); the index only for rows whose pubkey is unknown.
+function openExplorer(row) { const url = explorerUrl(network.value, row.pubkeyUnknown ? row.index : row.pubkey); if (url) window.open(url, '_blank') }
 function exportCsv(list) {
     const header = 'pubkey,index,status,balance,withdrawal,fee_recipient,graffiti'
     const lines = list.map((r) => [r.pubkeyUnknown ? '' : r.pubkey, r.index ?? '', r.status ?? '', r.balance ?? '', r.withdrawalType ?? '', r.feeRecipient ?? '', r.graffiti ?? ''].join(','))

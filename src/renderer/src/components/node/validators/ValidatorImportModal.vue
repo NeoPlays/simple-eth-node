@@ -367,6 +367,7 @@ const tallies = computed(() => {
     return [
         { key: 'active', n: c.active || 0, label: 'signing', kind: 'bad' },
         { key: 'inactive', n: c.inactive || 0, label: 'idle', kind: 'good' },
+        { key: 'deposit-queued', n: c['deposit-queued'] || 0, label: 'in deposit queue', kind: '' },
         { key: 'pending', n: c.pending || 0, label: 'pending activation', kind: '' },
         { key: 'not-on-chain', n: c['not-on-chain'] || 0, label: 'not on chain', kind: '' },
         { key: 'unknown', n: c.unknown || 0, label: 'unchecked', kind: 'warn' },

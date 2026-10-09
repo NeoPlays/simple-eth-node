@@ -37,6 +37,7 @@ import {
     dutiesByIndex, dutiesMeta,
 } from "@main/nodes/validatorDuties";
 import { validateInterchange } from "@main/nodes/slashingProtection";
+import { buildDepositQueueScript, parseDepositQueue, depositQueuedState } from "@main/nodes/depositQueue";
 import { checkEpochs, buildOnchainCheckScript, parseOnchainCheck, onchainVerdicts, summarizeVerdicts } from "@main/nodes/onchainCheck";
 import {
     STEREUM_SETTINGS_PATH, buildUpdateStateScript, parseUpdateState, validateUpdatePatch, applyUpdatePatch,
@@ -1050,7 +1051,32 @@ export class Node {
             const c = codes[0]
             return { ok: false, error: c > 0 ? `Beacon returned HTTP ${c}` : 'Beacon unreachable or timed out', states: {}, ...origin }
         }
-        return { ok: true, states, ...origin }
+        // Keys the validators route does not know may be deposited but still queued (Electra's
+        // pending_deposits): look those up so they read "deposit queued", not "not deposited".
+        const missing = pubkeys.map((p) => String(p).toLowerCase()).filter((p) => !states[p])
+        const dq = await this._depositQueueStates(base, missing)
+        return { ok: true, states: { ...states, ...dq.states }, depositQueue: dq.queue, ...origin }
+    }
+
+    /**
+     * Deposit-queue records for keys without a validator (see depositQueue.js). Best effort: a
+     * beacon without the route (pre-Electra, older client) just yields nothing.
+     * @returns {Promise<{ states: { [pubkey]: object }, queue: { length, totalEth }|null }>}
+     */
+    async _depositQueueStates(base, pubkeys = []) {
+        const script = buildDepositQueueScript(base, pubkeys)
+        if (!script) return { states: {}, queue: null }
+        try {
+            const res = await this.sshService.exec(wrapSidecar(script), true, { timeoutMs: 90_000 })
+            const queue = parseDepositQueue(res.stdout)
+            if (!queue.ok) return { states: {}, queue: null }
+            const states = {}
+            for (const [pk, match] of Object.entries(queue.matches)) states[pk] = depositQueuedState(pk, match, queue)
+            return { states, queue: { length: queue.length, totalEth: queue.totalGwei / 1e9 } }
+        } catch (e) {
+            log.warn('deposit queue lookup failed:', e?.message || e)
+            return { states: {}, queue: null }
+        }
     }
 
     /**

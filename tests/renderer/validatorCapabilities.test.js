@@ -63,10 +63,15 @@ describe('actionDisabled', () => {
     })
 
     it('disables index-dependent actions until the beacon index is known', () => {
+        const needsIndex = { id: 'x', label: 'x', needsIndex: true }
+        expect(actionDisabled(needsIndex, { row: { index: null }, soloEligible: true })).toBe(true)
+        expect(actionHint(needsIndex, { row: { index: null }, soloEligible: true })).toBe('no index')
+        expect(actionDisabled(needsIndex, { row, soloEligible: true })).toBe(false)
+    })
+
+    it('keeps the explorer link available before the validator has an index (pubkey link)', () => {
         const explorer = byId(solo.rowActions, 'viewBeaconcha')
-        expect(actionDisabled(explorer, { row: { index: null }, soloEligible: true })).toBe(true)
-        expect(actionHint(explorer, { row: { index: null }, soloEligible: true })).toBe('no index')
-        expect(actionDisabled(explorer, { row, soloEligible: true })).toBe(false)
+        expect(actionDisabled(explorer, { row: { index: null }, soloEligible: true })).toBe(false)
     })
 
     it('defaults to disabled for a missing action', () => {
@@ -83,6 +88,8 @@ describe('explorerUrl', () => {
         expect(explorerUrl('mainnet', 5)).toBe('https://beaconcha.in/validator/5')
         expect(explorerUrl('HOODI', 5)).toBe('https://hoodi.beaconcha.in/validator/5')
         expect(explorerUrl('gnosis', 5)).toBe('https://beaconchain.gnosischain.com/validator/5')
+        // a pubkey resolves too, also before the validator has an index
+        expect(explorerUrl('hoodi', '0xacc0')).toBe('https://hoodi.beaconcha.in/validator/0xacc0')
     })
     it('returns null without a network or index', () => {
         expect(explorerUrl('nonsense', 5)).toBeNull()

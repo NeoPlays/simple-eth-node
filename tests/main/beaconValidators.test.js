@@ -64,7 +64,17 @@ describe('toValidatorStat', () => {
         expect(toValidatorStat(raw)).toEqual({
             pubkey: '0xabcd', index: 1274903, status: 'Active', rawStatus: 'active_ongoing', slashed: false,
             balance: 32.0015, effectiveBalance: 32, withdrawalType: '0x01', activationEpoch: '1234',
+            activationEligibilityEpoch: null,
         })
+    })
+
+    it('reads the far-future epoch as "not scheduled", not as a number', () => {
+        const queued = toValidatorStat({
+            index: '9', status: 'pending_queued',
+            validator: { pubkey: '0xa', activation_eligibility_epoch: '128470', activation_epoch: '18446744073709551615' },
+        })
+        expect(queued.activationEligibilityEpoch).toBe('128470')
+        expect(queued.activationEpoch).toBeNull()
     })
 
     it('keeps the raw status, which the coarse bucket cannot express', () => {
