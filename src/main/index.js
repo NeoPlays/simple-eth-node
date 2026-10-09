@@ -26,6 +26,18 @@ function createWindow() {
         return { action: 'deny' }
     })
 
+    // A file dropped anywhere outside a drop zone makes Chromium open it in the window, replacing
+    // the app. Only same-document navigation is legitimate here (the router never leaves the page).
+    mainWindow.webContents.on('will-navigate', (event, url) => {
+        try {
+            const current = new URL(mainWindow.webContents.getURL())
+            const next = new URL(url)
+            if (next.origin !== current.origin || next.pathname !== current.pathname) event.preventDefault()
+        } catch {
+            event.preventDefault()
+        }
+    })
+
     // Dev: electron-vite HMR URL; prod: local html file.
     if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
         mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])

@@ -240,6 +240,7 @@
                 @pick-keystores="({ done }) => pickJsonFiles(true, 'Select validator keystores', done)"
                 @pick-protection="({ done }) => pickJsonFiles(false, 'Select slashing protection file', done)"
                 @validate="validateProtection"
+                @check-onchain="checkOnchain"
                 @apply="applyImport"
             />
             <ValidatorExitModal
@@ -814,11 +815,21 @@ async function validateProtection({ protection, pubkeys, done }) {
     }
 }
 
-async function applyImport({ keystores, passwords, slashingProtection, acknowledgedNeverSigned, done }) {
+// Which keys signed on chain recently (current epoch and the 3 before), against the same beacon
+// the stats use - the main process repeats this check inside the import itself.
+async function checkOnchain({ pubkeys, done }) {
+    try {
+        done(await window.api.invoke('check-keys-onchain', props.nodeId, pubkeys, beaconUrl.value || null))
+    } catch (e) {
+        done({ ok: false, error: e?.message || 'The on-chain check failed' })
+    }
+}
+
+async function applyImport({ keystores, passwords, slashingProtection, done }) {
     let res
     try {
         res = await window.api.invoke('import-validator-keys', props.nodeId, activeService.value.id,
-            keystores, passwords, slashingProtection, { acknowledgedNeverSigned })
+            keystores, passwords, slashingProtection, { beaconUrl: beaconUrl.value || null })
     } catch (e) {
         res = { ok: false, error: e?.message || 'The import failed' }
     }

@@ -23,7 +23,7 @@ import {
     parseKeymanagerResponse, parseKeystoresList, parseWeb3SignerPubkeys, validatorListable,
     feeRecipientPath, graffitiPath, parseFeeRecipient, parseGraffiti,
     isValidFeeRecipient, isValidGraffiti, graffitiByteLength, GRAFFITI_MAX_BYTES,
-    isWriteSuccess, isClearSuccess, isValidPubkey,
+    isWriteSuccess, isClearSuccess, isValidPubkey, describeCurlFailure, buildWalletPermissionFix,
     buildCurlConfig, buildSidecarStdinCommand, buildImportBody, parseImportKeystoresResponse,
     KEYSTORES_PATH, DELETE_OK_STATUSES, parseDeleteKeystoresResponse,
     deleteErrors, deleteNotFound, protectionCoversAll,
@@ -37,6 +37,7 @@ import {
     dutiesByIndex, dutiesMeta,
 } from "@main/nodes/validatorDuties";
 import { validateInterchange } from "@main/nodes/slashingProtection";
+import { checkEpochs, buildOnchainCheckScript, parseOnchainCheck, onchainVerdicts, summarizeVerdicts } from "@main/nodes/onchainCheck";
 import {
     STEREUM_SETTINGS_PATH, buildUpdateStateScript, parseUpdateState, validateUpdatePatch, applyUpdatePatch,
 } from "@main/nodes/updateSettings";
@@ -57,6 +58,11 @@ const NO_BEACON_ERROR = 'No beacon available: this node has no running consensus
 /**
  * Represents a remote node managed via SSH
  */
+
+/** Import time limit: a minute of headroom plus 15s per keystore, at most 30 minutes. */
+export function importTimeoutMs(count) {
+    return Math.min(30 * 60_000, 60_000 + 15_000 * Math.max(1, Number(count) || 1))
+}
 
 export class Node {
 
@@ -398,6 +404,22 @@ export class Node {
         return { ok: true, keys: parseKeystoresList(r.body) }
     }
 
+    /**
+     * Put back the file permissions a client needs before it rewrites its key store (Prysm: see
+     * buildWalletPermissionFix). Best effort: a failure is logged and the write goes ahead, so the
+     * client's own error still reaches the user if this was not the cause.
+     */
+    async _prepareKeystoreWrite(config) {
+        const cmd = buildWalletPermissionFix(config)
+        if (!cmd) return
+        try {
+            const res = await this.sshService.exec(cmd, true)
+            if (res.rc !== 0 && res.rc !== null) log.warn('wallet permission fix failed:', res.stderr || res.rc)
+        } catch (e) {
+            log.warn('wallet permission fix failed:', e?.message || e)
+        }
+    }
+
     /** Read a validator client's keymanager bearer token. Returns `{ token }` or `{ error }`. */
     async _keymanagerToken(serviceId, config) {
         const tokenCmd = buildTokenReadCommand({ id: serviceId, config })
@@ -418,20 +440,23 @@ export class Node {
      * judge success from `httpCode`, never from the exec's rc.
      * @returns {Promise<{ httpCode?: number, body?: string, error?: string }>}
      */
-    async _keymanagerRequest(serviceId, config, { method = 'GET', path, body, token, timeoutMs = 20_000 } = {}) {
+    async _keymanagerRequest(serviceId, config, { method = 'GET', path, body, token, timeoutMs = 25_000 } = {}) {
         let bearer = token
         if (!bearer) {
             const t = await this._keymanagerToken(serviceId, config)
             if (t.error) return { error: t.error }
             bearer = t.token
         }
+        // curl's own limit sits just under the exec's idle timeout: curl is silent while it waits,
+        // so the exec timer would otherwise fire first and lose curl's "why".
+        const timeoutS = Math.max(5, Math.floor(timeoutMs / 1000) - 5)
         const req = buildKeymanagerRequest({
-            serviceId, target: keymanagerTarget(config), method, path, token: bearer, body,
+            serviceId, target: keymanagerTarget(config), method, path, token: bearer, body, timeoutS,
         })
         if (!req) return { error: 'Could not resolve the keymanager endpoint' }
         const res = await this.sshService.exec(req.command, true, { timeoutMs, input: req.input })
         const parsed = parseKeymanagerResponse(res.stdout)
-        return { httpCode: parsed.httpCode, body: parsed.body }
+        return { httpCode: parsed.httpCode, body: parsed.body, curlError: parsed.httpCode ? null : describeCurlFailure(res.stderr), timeoutS }
     }
 
     /**
@@ -671,6 +696,7 @@ export class Node {
         if (c.error) return { ok: false, error: c.error }
         if (!pubkeys.length) return { ok: false, error: 'No keys selected' }
 
+        await this._prepareKeystoreWrite(c.config)
         // Stopping many keys and serialising their history is slower than a settings write.
         const r = await this._keymanagerRequest(serviceId, c.config, {
             method: 'DELETE', path: KEYSTORES_PATH, body: { pubkeys }, timeoutMs: 120_000,
@@ -742,6 +768,38 @@ export class Node {
     }
 
     /**
+     * Has any of these keys signed on chain in the current epoch or the three before it? Run
+     * before an import: a key that is signing elsewhere right now must not start signing here too,
+     * and no slashing-protection file can catch that (see onchainCheck.js for the two routes).
+     * Read-only. `ok:false` means the check could not run at all - never "nothing is active".
+     * @returns {Promise<{ ok, results?: { [pubkey]: { verdict, index?, signedIn, uncheckedEpochs } }, counts?, currentEpoch?, epochs?, base?, source?, error? }>}
+     */
+    async checkKeysOnChain(pubkeys = [], { beaconUrl } = {}) {
+        const keys = [...new Set((Array.isArray(pubkeys) ? pubkeys : []).map((p) => String(p).toLowerCase()))]
+        if (!keys.length) return { ok: true, results: {}, counts: summarizeVerdicts({}) }
+        const ctx = await this.getBeaconContext({ beaconUrl })
+        if (!ctx.ok) return { ok: false, error: ctx.error }
+        const origin = { base: ctx.base, source: ctx.source }
+        // A syncing beacon's head epoch is not the chain's: its "last 3 epochs" are long past.
+        if (ctx.syncing || ctx.currentEpoch == null) {
+            return { ok: false, error: 'The beacon node is still syncing, so recent activity cannot be checked', ...origin }
+        }
+        const st = await this.getValidatorStates(keys, { beaconUrl: ctx.source === 'custom' ? beaconUrl : undefined })
+        if (!st.ok) return { ok: false, error: st.error, ...origin }
+
+        const epochs = checkEpochs(ctx.currentEpoch)
+        const indices = Object.values(st.states).filter((s) => s.index != null && s.status !== 'Pending').map((s) => s.index)
+        let parsed = { liveness: {}, rewards: {} }
+        const script = buildOnchainCheckScript(ctx.base, { currentEpoch: ctx.currentEpoch, indices })
+        if (script) {
+            const res = await this.sshService.exec(wrapSidecar(script), true, { timeoutMs: 60_000 })
+            parsed = parseOnchainCheck(res.stdout)
+        }
+        const results = onchainVerdicts(keys, st.states, parsed, epochs)
+        return { ok: true, results, counts: summarizeVerdicts(results), currentEpoch: ctx.currentEpoch, epochs, ...origin }
+    }
+
+    /**
      * Check a slashing-protection file against this node's chain and the keys being imported.
      *
      * `ok` means the check RAN, not that the file passed - failures are in `errors`. Only an
@@ -773,7 +831,7 @@ export class Node {
      * @param {string|null} slashingProtection - EIP-3076 interchange JSON as a string
      * @returns {Promise<{ ok, results?, error?, httpCode? }>}
      */
-    async importValidatorKeys(serviceId, keystores = [], passwords = [], slashingProtection = null, { acknowledgedNeverSigned = false } = {}) {
+    async importValidatorKeys(serviceId, keystores = [], passwords = [], slashingProtection = null, { beaconUrl } = {}) {
         const c = await this._validatorConfig(serviceId, { write: true })
         if (c.error) return { ok: false, error: c.error }
         if (!keystores.length) return { ok: false, error: 'No keystores selected' }
@@ -792,24 +850,50 @@ export class Node {
                 genesisValidatorsRoot: ctx.ok ? ctx.genesisValidatorsRoot : null,
             })
             if (!check.ok) return { ok: false, error: check.errors.join(' '), validation: check }
-        } else if (!acknowledgedNeverSigned) {
-            // Refused in the main process too, not just the UI: this is the gate that stands
-            // between a re-imported key and a slashing, so it must not live only in a modal.
-            return { ok: false, error: 'Importing without slashing protection requires confirming these keys have never signed' }
+        }
+        // What the import could not vouch for travels back with the result: warned about, not
+        // confirmed away. Only certain danger refuses (a key signing on chain, a protection file
+        // that does not fit these keys); missing information is the operator's call.
+        const warnings = []
+        if (!slashingProtection) {
+            warnings.push('Imported without a slashing protection file: the client has no signing history for these keys, which is only safe if they have never signed.')
         }
 
+        // On-chain activity gate, enforced here and not just in the modal: a key that signed in the
+        // last epochs is running somewhere else, and two signers for one key is a slashing.
+        const onchain = await this.checkKeysOnChain(pubkeys, { beaconUrl })
+        const active = onchain.ok ? Object.entries(onchain.results).filter(([, r]) => r.verdict === 'active') : []
+        if (active.length) {
+            const list = active.map(([pk, r]) => `${pk.slice(0, 12)}… (validator ${r.index}, epoch ${r.signedIn[0]})`).join(', ')
+            return { ok: false, error: `Refused: ${active.length === 1 ? 'this key is' : `${active.length} keys are`} signing on chain right now: ${list}. Stop the other client and wait a few epochs before importing.`, onchain }
+        }
+        if (!onchain.ok) warnings.push(`Recent on-chain activity could not be checked (${onchain.error}).`)
+        else if (onchain.counts.unknown > 0) warnings.push(`Recent on-chain activity could not be fully checked for ${onchain.counts.unknown} ${onchain.counts.unknown === 1 ? 'key' : 'keys'}.`)
+
+        await this._prepareKeystoreWrite(c.config)
+        // The client answers only after decrypting every keystore - scrypt/pbkdf2, deliberately slow,
+        // and Prysm does them one by one - so the limit grows with the batch instead of a flat 20s.
         const r = await this._keymanagerRequest(serviceId, c.config, {
             method: 'POST',
             path: KEYSTORES_PATH,
             body: buildImportBody(keystores, passwords, slashingProtection),
-            timeoutMs: 180_000,
+            timeoutMs: importTimeoutMs(keystores.length),
         })
         if (r.error) return { ok: false, error: r.error }
+        if (r.curlError?.timedOut) {
+            // A timeout is not a failure the client saw: the import may still finish over there.
+            // Re-importing is safe either way - keys already present come back as `duplicate`.
+            return {
+                ok: false,
+                timedOut: true,
+                error: `The client did not answer within ${r.timeoutS}s. It decrypts every keystore before replying, so the import may still be running: refresh the key list in a minute before trying again (keys that did get imported are reported as duplicate, never imported twice).`,
+            }
+        }
         if (r.httpCode !== 200) return { ok: false, error: keymanagerHttpError(r), httpCode: r.httpCode }
 
         const parsed = parseImportKeystoresResponse(r.body, pubkeys)
         if (parsed.error) return { ok: false, error: parsed.error }
-        return { ok: true, results: parsed.results }
+        return { ok: true, results: parsed.results, warnings }
     }
 
     /**

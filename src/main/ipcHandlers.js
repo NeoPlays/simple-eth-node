@@ -464,6 +464,18 @@ export function initializeIpcHandlers() {
 
     // Which validator clients run behind a DVT client (Charon/Pluto), local or on another machine.
     // A failed probe returns null, which the renderer treats as "unknown" and keeps writes gated.
+    // Before an import: which of these keys signed on chain in the current epoch or the 3 before.
+    ipcMain.handle('check-keys-onchain', async (_, nodeId, pubkeys, beaconUrl) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return await node.checkKeysOnChain(pubkeys, { beaconUrl })
+        } catch (error) {
+            log.error('check-keys-onchain error:', error)
+            return { ok: false, error: error.message || 'check-keys-onchain failed' }
+        }
+    });
+
     ipcMain.handle('detect-dvt-backends', async (_, nodeId, refresh = false) => {
         try {
             const node = nodeManager.findNode(nodeId)

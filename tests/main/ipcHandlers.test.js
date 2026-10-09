@@ -66,6 +66,7 @@ const { handlers, fakeStorage, fakeNode, fakeNodeManager, fakeTaskManager, fakeW
             runFullUpdate: vi.fn(),
             setUpdateSettings: vi.fn(),
             detectDvtBackends: vi.fn(),
+            checkKeysOnChain: vi.fn(),
             getDvtValidatorStates: vi.fn(),
             applyUpdateSchedule: vi.fn(),
             getUpdateSettings: vi.fn(),
@@ -128,6 +129,7 @@ describe('ipcHandlers', () => {
     it('registers all expected channels', () => {
         expect(Object.keys(handlers).sort()).toEqual([
             'check-checkpoint-sync',
+            'check-keys-onchain',
             'delete-validator-keys',
             'detect-dvt-backends',
             'disconnect-node',
@@ -351,6 +353,15 @@ describe('ipcHandlers', () => {
 
             fakeNodeManager.findNode.mockReturnValueOnce(null)
             await expect(handlers['get-controls-commit'](event, 'n')).rejects.toThrow('Node not found')
+        })
+
+        it('check-keys-onchain delegates and soft-fails', async () => {
+            fakeNodeManager.findNode.mockReturnValueOnce(fakeNode)
+            fakeNode.checkKeysOnChain.mockResolvedValueOnce({ ok: true, results: {} })
+            await handlers['check-keys-onchain'](event, 'n', ['0xaa'], null)
+            expect(fakeNode.checkKeysOnChain).toHaveBeenCalledWith(['0xaa'], { beaconUrl: null })
+            fakeNodeManager.findNode.mockReturnValueOnce(null)
+            expect(await handlers['check-keys-onchain'](event, 'n', [])).toMatchObject({ ok: false })
         })
 
         it('detect-dvt-backends delegates, and returns null (unknown) on failure', async () => {

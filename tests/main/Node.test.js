@@ -33,7 +33,7 @@ vi.mock('@main/ssh/SSHService', () => {
 
 vi.mock('electron-log', () => ({ default: { debug: vi.fn(), info: vi.fn(), error: vi.fn(), warn: vi.fn() } }))
 
-import { Node } from '@main/nodes/Node'
+import { Node, importTimeoutMs } from '@main/nodes/Node'
 import { taskContext } from '@main/tasks/TaskManager'
 
 const creds = { host: '1.2.3.4', port: 22, username: 'root', password: 'p', privateKey: '/fake/key', passphrase: '' }
@@ -1414,8 +1414,33 @@ describe('Node', () => {
     })
 
     describe('importValidatorKeys', () => {
-        // A solo client: the DVT gate (tested on its own below) says "not behind a DVT client".
-        beforeEach(() => { vi.spyOn(node, '_dvtBehind').mockResolvedValue(null) })
+        // A solo client with keys that are not signing anywhere: the DVT gate and the on-chain
+        // activity check (both tested on their own) pass.
+        beforeEach(() => {
+            vi.spyOn(node, '_dvtBehind').mockResolvedValue(null)
+            vi.spyOn(node, 'checkKeysOnChain').mockResolvedValue({ ok: true, results: {}, counts: { active: 0, unknown: 0 } })
+        })
+
+        it('refuses keys that signed on chain in the checked epochs', async () => {
+            wire()
+            node.checkKeysOnChain.mockResolvedValueOnce({
+                ok: true, counts: { active: 1, unknown: 0 },
+                results: { [PK_A]: { verdict: 'active', index: 42, signedIn: [99], uncheckedEpochs: [] } },
+            })
+            const r = await node.importValidatorKeys('svc', [keystore(PK_A)], ['pw'], null)
+            expect(r.ok).toBe(false)
+            expect(r.error).toMatch(/signing on chain right now/)
+            expect(r.error).toContain('validator 42, epoch 99')
+            expect(node.sshService.exec.mock.calls.some((c) => c[2]?.input?.includes('/eth/v1/keystores'))).toBe(false)
+        })
+
+        it('imports when activity could not be checked, and says so in the result', async () => {
+            wire({ keymanagerBody: '{"data":[{"status":"imported"}]}' })
+            node.checkKeysOnChain.mockResolvedValue({ ok: false, error: 'Beacon node did not answer' })
+            const r = await node.importValidatorKeys('svc', [keystore(PK_A)], ['pw'], null)
+            expect(r.ok).toBe(true)
+            expect(r.warnings.join(' ')).toContain('could not be checked (Beacon node did not answer)')
+        })
         const VC_YAML = 'service: LighthouseValidatorService\ncommand:\n  - --http\n'
         const PK_A = '0x' + 'a'.repeat(96)
         const keystore = (pubkey) => JSON.stringify({ pubkey: pubkey.replace(/^0x/, ''), crypto: {} })
@@ -1436,16 +1461,64 @@ describe('Node', () => {
             return inputs
         }
 
-        it('refuses a protection-less import that was not explicitly acknowledged', async () => {
+        it('gives curl a time limit that grows with the batch, not a flat 20s', async () => {
+            const inputs = wire({ keymanagerBody: '{"data":[{"status":"imported"},{"status":"imported"}]}' })
+            await node.importValidatorKeys('svc', [keystore(PK_A), keystore('0x' + 'b'.repeat(96))], ['pw', 'pw'], null)
+            const req = inputs.find((i) => i.includes('/eth/v1/keystores'))
+            // 60s + 15s per keystore = 90s for the exec, curl 5s under it
+            expect(req).toContain('max-time = "85"')
+            expect(importTimeoutMs(2)).toBe(90_000)
+            expect(importTimeoutMs(10_000)).toBe(30 * 60_000)
+        })
+
+        it('reports a curl timeout as "may still be importing", not as an unreachable client', async () => {
             wire()
+            node.sshService.exec = vi.fn(async (cmd, sudo, opts) => {
+                if (cmd.includes('cat /etc/stereum/services/')) return ok(VC_YAML)
+                if (cmd.startsWith('docker exec') || cmd.includes(' docker exec')) return ok('TOKEN')
+                if (opts?.input?.includes('/eth/v1/keystores')) return { rc: 28, stdout: '\n000', stderr: 'curl: (28) Operation timed out after 75001 milliseconds with 0 bytes received' }
+                return ok('')
+            })
             const r = await node.importValidatorKeys('svc', [keystore(PK_A)], ['pw'], null)
             expect(r.ok).toBe(false)
-            expect(r.error).toContain('never signed')
+            expect(r.timedOut).toBe(true)
+            expect(r.error).toContain('may still be running')
+            expect(r.error).not.toContain('unreachable')
+        })
+
+        it('restores 0600 on a Prysm wallet before importing, and leaves other clients alone', async () => {
+            const PRYSM_YAML = 'service: PrysmValidatorService\ncommand:\n  - --http-host=0.0.0.0\n  - --http-port=7500\nvolumes:\n  - /opt/stereum/prysm-x/data/wallets:/opt/app/data/wallets\n'
+            const calls = []
+            node.sshService.exec = vi.fn(async (cmd, sudo, opts) => {
+                calls.push(opts?.input?.includes('/eth/v1/keystores') ? 'POST keystores' : cmd)
+                if (cmd.includes('cat /etc/stereum/services/')) return ok(PRYSM_YAML)
+                if (cmd.includes('auth-token')) return ok('header\nTOKEN\n')
+                if (opts?.input?.includes('/eth/v1/keystores')) return ok('{"data":[{"status":"imported"}]}\n200')
+                return ok('')
+            })
+            const r = await node.importValidatorKeys('svc', [keystore(PK_A)], ['pw'], null)
+            expect(r.ok).toBe(true)
+            const fix = calls.findIndex((c) => String(c).includes('chmod 600'))
+            expect(fix).toBeGreaterThan(-1)
+            expect(calls[fix]).toContain('/opt/stereum/prysm-x/data/wallets/direct/accounts')
+            expect(fix).toBeLessThan(calls.indexOf('POST keystores'))
+
+            const inputs = wire({ keymanagerBody: '{"data":[{"status":"imported"}]}' })
+            await node.importValidatorKeys('svc', [keystore(PK_A)], ['pw'], null)
+            expect(node.sshService.exec.mock.calls.some((c) => String(c[0]).includes('chmod 600'))).toBe(false)
+            expect(inputs.length).toBeGreaterThan(0)
+        })
+
+        it('imports without a protection file, with a warning instead of a confirmation', async () => {
+            wire({ keymanagerBody: '{"data":[{"status":"imported"}]}' })
+            const r = await node.importValidatorKeys('svc', [keystore(PK_A)], ['pw'], null)
+            expect(r.ok).toBe(true)
+            expect(r.warnings.join(' ')).toContain('without a slashing protection file')
         })
 
         it('refuses when passwords and keystores do not line up', async () => {
             wire()
-            const r = await node.importValidatorKeys('svc', [keystore(PK_A), keystore(PK_A)], ['pw'], null, { acknowledgedNeverSigned: true })
+            const r = await node.importValidatorKeys('svc', [keystore(PK_A), keystore(PK_A)], ['pw'], null)
             expect(r.ok).toBe(false)
             expect(r.error).toContain('exactly one password')
         })
@@ -1465,7 +1538,7 @@ describe('Node', () => {
 
         it('sends keystores and passwords over stdin and reports per-key status', async () => {
             const inputs = wire({ keymanagerBody: JSON.stringify({ data: [{ status: 'imported' }] }) })
-            const r = await node.importValidatorKeys('svc', [keystore(PK_A)], ['hunter2'], null, { acknowledgedNeverSigned: true })
+            const r = await node.importValidatorKeys('svc', [keystore(PK_A)], ['hunter2'], null)
             expect(r.ok).toBe(true)
             expect(r.results[0]).toMatchObject({ pubkey: PK_A, status: 'imported' })
             const importCall = node.sshService.exec.mock.calls.find((c) => c[2]?.input?.includes('/eth/v1/keystores'))
@@ -1475,7 +1548,7 @@ describe('Node', () => {
 
         it('treats a status the client invented as an error, never a success', async () => {
             wire({ keymanagerBody: JSON.stringify({ data: [{ status: 'unknown' }] }) })
-            const r = await node.importValidatorKeys('svc', [keystore(PK_A)], ['pw'], null, { acknowledgedNeverSigned: true })
+            const r = await node.importValidatorKeys('svc', [keystore(PK_A)], ['pw'], null)
             expect(r.results[0].status).toBe('error')
         })
     })

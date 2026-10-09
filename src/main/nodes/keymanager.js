@@ -11,7 +11,7 @@
  * v1 scope here is the READ path (list validators + Web3Signer pubkeys); the request builder
  * is general (method/path/body) so later phases (import/remove/exit) reuse it behind gates.
  */
-import { CURL_IMAGE, STEREUM_DOCKER_NETWORK } from "@main/nodes/metrics";
+import { CURL_IMAGE, STEREUM_DOCKER_NETWORK, shellQuote } from "@main/nodes/metrics";
 import { isDvtService } from "@main/nodes/dvt";
 
 // Per stereum service type: internal port, scheme, whether curl must skip TLS verify (Teku
@@ -252,6 +252,25 @@ export function wrapSidecar(script) {
     return `docker run --rm --network ${STEREUM_DOCKER_NETWORK} --entrypoint sh ${CURL_IMAGE} -c '${escaped}'`
 }
 
+/**
+ * Host command restoring 0600 on Prysm's wallet account files, or null for other clients.
+ *
+ * Stereum's `manage-service` role chmods every volume of a service to 0700, recursively, on each
+ * start/restart - Prysm's `all-accounts.keystore.json` included. Prysm then refuses every
+ * keymanager write that has to rewrite that file ("could not write accounts file: already exists
+ * without proper 0600 permission"). Stereum's own launcher puts 0600 back before each keymanager
+ * call (ValidatorAccountManager.getApiToken: `chmod -Rv 600 <wallet>/direct/accounts/*`); this is
+ * the same fix, limited to plain files so a directory never loses its execute bit. It must run
+ * before every write, since the next restart undoes it.
+ */
+export function buildWalletPermissionFix(config) {
+    if (config?.service !== 'PrysmValidatorService') return null
+    const wallet = hostVolumePath(config, '/opt/app/data/wallets')
+    if (!wallet) return null
+    const dir = `${wallet.replace(/\/+$/, '')}/direct/accounts`
+    return `find ${shellQuote(dir)} -maxdepth 1 -type f -exec chmod 600 {} +`
+}
+
 /** Host path of a service's volume whose container side is `containerPath`, or undefined. */
 function hostVolumePath(config, containerPath) {
     for (const v of (config?.volumes || [])) {
@@ -294,13 +313,13 @@ export function parseToken(serviceType, stdout) {
  * into its stdin. Callers do `sshService.exec(command, true, { input })`.
  * @returns {{ command: string, input: string }|null}
  */
-export function buildKeymanagerRequest({ serviceId, target, method = 'GET', path, token, body }) {
+export function buildKeymanagerRequest({ serviceId, target, method = 'GET', path, token, body, timeoutS = KEYMANAGER_TIMEOUT_S }) {
     const url = keymanagerUrl({ serviceId, scheme: target?.scheme, port: target?.port, path })
     if (!url) return null
     const headers = {}
     if (body !== undefined) headers['Content-Type'] = 'application/json'
     if (token) headers.Authorization = `Bearer ${token}`
-    const input = buildCurlConfig({ url, method, headers, body, insecure: Boolean(target?.insecure) })
+    const input = buildCurlConfig({ url, method, headers, body, insecure: Boolean(target?.insecure), timeoutS })
     return { command: buildSidecarStdinCommand(), input }
 }
 
@@ -343,12 +362,34 @@ export function parseKeystoresList(bodyOrJson) {
 }
 
 /**
+ * Why curl got no HTTP answer at all (`%{http_code}` 000), from its `show-error` stderr line
+ * `curl: (N) ...`. Without this every failure read "unreachable", including a request that was
+ * merely slower than its time limit - and a timed-out write may well have completed on the client.
+ * @returns {{ code: number, timedOut: boolean, message: string }|null}
+ */
+export function describeCurlFailure(stderr) {
+    const m = String(stderr ?? '').match(/curl: \((\d+)\)\s*([^\n]*)/)
+    if (!m) return null
+    const code = Number(m[1])
+    const messages = {
+        6: 'Could not resolve the client\'s container (is it running?)',
+        7: 'The client refused the connection: its API is not listening (is it running, with the keymanager API enabled?)',
+        28: 'The client did not answer in time',
+        35: 'TLS handshake with the client failed',
+        52: 'The client closed the connection without answering',
+        56: 'The connection to the client broke off mid-request',
+        60: 'The client\'s TLS certificate was rejected',
+    }
+    return { code, timedOut: code === 28, message: messages[code] || `Request to the client failed (curl ${code}: ${m[2].trim()})` }
+}
+
+/**
  * Human-readable error for a non-2xx keymanager response. Clients disagree on the error body
  * (the spec says `{message}`, Lighthouse adds `{code, stacktraces}`), so the message is shown
  * verbatim when present and never branched on - a client's own wording beats anything we invent.
  */
-export function keymanagerHttpError({ httpCode, body } = {}, fallback = 'Client API unreachable (is it running?)') {
-    if (!httpCode) return fallback
+export function keymanagerHttpError({ httpCode, body, curlError } = {}, fallback = 'Client API unreachable (is it running?)') {
+    if (!httpCode) return curlError?.message || fallback
     let message = ''
     try {
         const json = JSON.parse(body)

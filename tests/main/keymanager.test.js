@@ -14,6 +14,8 @@ import {
     parseToken,
     buildWeb3SignerRequest,
     keymanagerHttpError,
+    describeCurlFailure,
+    buildWalletPermissionFix,
     buildCurlConfigBatch,
     parseBatchResponses,
     isValidFeeRecipient,
@@ -192,6 +194,10 @@ describe('buildKeymanagerRequest', () => {
     it('returns null when the endpoint cannot be resolved', () => {
         expect(buildKeymanagerRequest({ serviceId: 'a', target, method: 'GET' })).toBeNull()
     })
+    it('carries the per-request time limit into the curl config (20s by default)', () => {
+        expect(buildKeymanagerRequest({ serviceId: 'a', target, path: '/p' }).input).toContain('max-time = "20"')
+        expect(buildKeymanagerRequest({ serviceId: 'a', target, path: '/p', timeoutS: 295 }).input).toContain('max-time = "295"')
+    })
 })
 
 describe('keymanagerHttpError', () => {
@@ -204,6 +210,26 @@ describe('keymanagerHttpError', () => {
     })
     it('reports unreachable when curl never connected', () => {
         expect(keymanagerHttpError({ httpCode: 0, body: '' })).toContain('unreachable')
+    })
+    it('prefers curl\'s own reason when it has one', () => {
+        const curlError = describeCurlFailure('curl: (28) Operation timed out after 20002 milliseconds with 0 bytes received')
+        expect(keymanagerHttpError({ httpCode: 0, body: '', curlError })).toBe('The client did not answer in time')
+    })
+})
+
+describe('describeCurlFailure', () => {
+    it('tells a timeout apart from a dead API', () => {
+        expect(describeCurlFailure('curl: (28) Operation timed out after 20002 milliseconds')).toMatchObject({ code: 28, timedOut: true })
+        expect(describeCurlFailure('curl: (7) Failed to connect to stereum-x port 7500')).toMatchObject({ code: 7, timedOut: false })
+        expect(describeCurlFailure('curl: (7) Failed').message).toContain('refused')
+        expect(describeCurlFailure('curl: (6) Could not resolve host: stereum-x').message).toContain('resolve')
+    })
+    it('keeps curl\'s wording for codes it has no text for', () => {
+        expect(describeCurlFailure('curl: (92) HTTP/2 stream 1 was not closed cleanly').message).toContain('curl 92: HTTP/2 stream')
+    })
+    it('is null without a curl error line', () => {
+        expect(describeCurlFailure('')).toBeNull()
+        expect(describeCurlFailure(undefined)).toBeNull()
     })
 })
 
@@ -474,5 +500,23 @@ describe('validatorListable', () => {
             expect(validatorListable({ service })).toBe(false)
         }
         expect(validatorListable(null)).toBe(false)
+    })
+})
+
+// Stereum's manage-service role chmods every volume to 0700 on each (re)start; Prysm refuses to
+// rewrite its accounts file unless it is 0600. Stereum's launcher restores 0600 before keymanager
+// calls, so must we.
+describe('buildWalletPermissionFix', () => {
+    const prysm = {
+        service: 'PrysmValidatorService',
+        volumes: ['/opt/stereum/prysm-x/data/db:/opt/app/data/db', '/opt/stereum/prysm-x/data/wallets/:/opt/app/data/wallets'],
+    }
+    it('chmods only the plain files under the host side of the wallets volume', () => {
+        expect(buildWalletPermissionFix(prysm)).toBe(
+            "find '/opt/stereum/prysm-x/data/wallets/direct/accounts' -maxdepth 1 -type f -exec chmod 600 {} +")
+    })
+    it('is null for other clients and for an unresolvable wallet volume', () => {
+        expect(buildWalletPermissionFix({ service: 'LighthouseValidatorService', volumes: prysm.volumes })).toBeNull()
+        expect(buildWalletPermissionFix({ service: 'PrysmValidatorService', volumes: [] })).toBeNull()
     })
 })
