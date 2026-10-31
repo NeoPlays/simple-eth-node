@@ -44,6 +44,7 @@ src/
 │   ├── nodes/slashingProtection.js # EIP-3076 interchange validation - the import safety gate (pure)
 │   ├── nodes/voluntaryExit.js   # Exit eligibility + two-step payload shapes (pure)
 │   ├── nodes/updateSettings.js  # stereum.yaml update policy: state-read script, cron parse/drift, patch validate/apply (pure)
+│   ├── nodes/graffitiFile.js    # Lighthouse --graffiti-file path/parse/update (pure) - Lighthouse graffiti reads + writes
 │   ├── tasks/TaskManager.js     # Singleton task registry (wraps long ops, parses stereumjson sub-tasks)
 │   ├── ssh/SSHService.js        # ssh2 connection pool
 │   └── store/StoreService.js    # electron-store wrapper
@@ -239,7 +240,9 @@ Every mutating validator action goes through its **own whitelisted channel**, ne
 
 **Bulk actions are one SSH exec, not N.** `buildCurlConfigBatch` joins requests with curl's `next` directive. An argv-level `-w` only applies to the FIRST request in a `next` chain (verified against a real curl), so each section carries its own `write-out` - and since that is a format string, the pubkey is embedded in the marker. Responses are therefore matched **by identity, never by position**, the same invariant the metrics probe follows.
 
-**Per-client status divergence** is absorbed in `keymanager.js`: the spec says 202 for POST and 204 for DELETE, but Prysm answers 200 for both, so `isWriteSuccess` accepts any 2xx. `isClearSuccess` also accepts 404 ("nothing was set", per Prysm) - safe **only** because the graffiti action is gated on a prior successful GET. That gate fails closed: `graffitiSupported` must be proven `true`, since an unproven value would let a clear run against a client with no graffiti route, where the 404 is indistinguishable from success.
+**Per-client status divergence** is absorbed in `keymanager.js`: the spec says 202 for POST and 204 for DELETE, but Prysm answers 200 for both, so `isWriteSuccess` accepts any 2xx - **unless the body carries an error** (`bodyCarriesError`: JSON `code >= 400`), because Lighthouse answers 202 to a write it refuses. `isClearSuccess` also accepts 404 ("nothing was set", per Prysm) - safe **only** because the graffiti action is gated on a prior successful GET. That gate fails closed: `graffitiSupported` must be proven `true`, since an unproven value would let a clear run against a client with no graffiti route, where the 404 is indistinguishable from success.
+
+**Lighthouse graffiti goes to its file, not the API.** Stereum always starts Lighthouse with `--graffiti-file`, and while that flag is set Lighthouse refuses the keymanager graffiti route (with a 202). `graffitiFilePath(config)` maps the flag to the host side of its volume; when it resolves, `getValidatorSettings` reads graffiti from the file (key line, else `default:`) and `setGraffiti` does a read-modify-write of it (`sudo tee`, content over stdin). Lighthouse re-reads the file per proposal, so no restart. `updateGraffitiFile` drops blank lines and `isValidGraffiti` refuses control characters, because one bad line makes Lighthouse reject the whole file.
 
 **Safety gates, in the main process, not just the modals:**
 

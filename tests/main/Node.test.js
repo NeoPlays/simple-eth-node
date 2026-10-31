@@ -1321,6 +1321,98 @@ describe('Node', () => {
             expect(r.graffitiSupported).toBe(false)
         })
 
+        it('reports a 202 whose body is an error as a failure', async () => {
+            let call = 0
+            node.sshService.exec = vi.fn(async () => {
+                const i = call++
+                if (i === 0) return ok(VC_YAML)
+                if (i === 1) return ok('TOKEN')
+                return ok(`{"code":400,"message":"BAD_REQUEST: refused"}\n===KM_RESP:${PK_A}:202===\n`)
+            })
+            const r = await node.setFeeRecipient('svc', [PK_A], '0x' + '1'.repeat(40))
+            expect(r.results[PK_A].ok).toBe(false)
+            expect(r.results[PK_A].error).toContain('refused')
+        })
+
+        describe('Lighthouse graffiti file', () => {
+            const LH_YAML = [
+                'service: LighthouseValidatorService',
+                'command:',
+                '  - --http',
+                '  - --graffiti-file=/opt/app/graffitis/graffitis.yaml',
+                'volumes:',
+                '  - /opt/stereum/lh/graffitis:/opt/app/graffitis',
+            ].join('\n') + '\n'
+            const FILE = '/opt/stereum/lh/graffitis/graffitis.yaml'
+
+            it('writes the file over stdin instead of calling the keymanager', async () => {
+                const calls = []
+                node.sshService.exec = vi.fn(async (cmd, sudo, opts) => {
+                    calls.push({ cmd, input: opts?.input })
+                    if (calls.length === 1) return ok(LH_YAML)
+                    if (cmd.startsWith('cat ')) return ok(`default: Stereum\n${PK_B}: theirs\n`)
+                    return ok('')
+                })
+                const r = await node.setGraffiti('svc', [PK_A], "it's mine")
+                expect(r.ok).toBe(true)
+                expect(r.results[PK_A]).toEqual({ ok: true })
+                expect(calls.some((c) => c.cmd.includes('docker'))).toBe(false)
+                const write = calls.find((c) => c.cmd.startsWith('tee '))
+                expect(write.cmd).toBe(`tee '${FILE}' > /dev/null`)
+                expect(write.cmd).not.toContain('mine')
+                expect(write.input).toBe(`default: Stereum\n${PK_B}: theirs\n${PK_A}: it's mine\n`)
+            })
+
+            it('removes the key line on a clear', async () => {
+                const calls = []
+                node.sshService.exec = vi.fn(async (cmd, sudo, opts) => {
+                    calls.push({ cmd, input: opts?.input })
+                    if (calls.length === 1) return ok(LH_YAML)
+                    if (cmd.startsWith('cat ')) return ok(`default: Stereum\n${PK_A}: mine\n`)
+                    return ok('')
+                })
+                const r = await node.setGraffiti('svc', [PK_A], null)
+                expect(r.results[PK_A].ok).toBe(true)
+                expect(calls.find((c) => c.cmd.startsWith('tee ')).input).toBe('default: Stereum\n')
+            })
+
+            it('fails every key when the write fails', async () => {
+                node.sshService.exec = vi.fn(async (cmd) => {
+                    if (cmd.startsWith('cat ') && !cmd.includes(FILE)) return ok(LH_YAML)
+                    if (cmd.startsWith('tee ')) return { rc: 1, stdout: '', stderr: 'read-only file system' }
+                    if (cmd.startsWith('cat ')) return ok('')
+                    return ok(LH_YAML)
+                })
+                const r = await node.setGraffiti('svc', [PK_A, PK_B], 'x')
+                expect(r.results[PK_A].ok).toBe(false)
+                expect(r.results[PK_B].error).toContain('read-only')
+            })
+
+            it('reads graffiti from the file and keeps graffiti supported', async () => {
+                let call = 0
+                node.sshService.exec = vi.fn(async (cmd) => {
+                    const i = call++
+                    if (i === 0) return ok(LH_YAML)
+                    if (i === 1) return ok('TOKEN')
+                    if (i === 2) return ok(`{"data":{"ethaddress":"0xfee"}}\n===KM_RESP:${PK_A}:200===\n{"data":{"ethaddress":"0xfee"}}\n===KM_RESP:${PK_B}:200===\n`)
+                    if (cmd.startsWith('cat ')) return ok(`default: Stereum\n${PK_A}: mine\n`)
+                    throw new Error('unexpected call: ' + cmd)
+                })
+                const r = await node.getValidatorSettings('svc', [PK_A, PK_B])
+                expect(r.graffitiSupported).toBe(true)
+                expect(r.settings[PK_A].graffiti).toBe('mine')
+                expect(r.settings[PK_B].graffiti).toBe('Stereum')
+            })
+        })
+
+        it('rejects a graffiti with a newline before touching the node', async () => {
+            node.sshService.exec = vi.fn(async () => ok(VC_YAML))
+            const r = await node.setGraffiti('svc', [PK_A], 'a\nb')
+            expect(r.ok).toBe(false)
+            expect(r.error).toContain('control characters')
+            expect(node.sshService.exec).not.toHaveBeenCalled()
+        })
+
         it('does not fire a request at all when no keys are selected', async () => {
             node.sshService.exec = vi.fn(async () => ok(VC_YAML))
             const r = await node.setFeeRecipient('svc', [], '0x' + '1'.repeat(40))

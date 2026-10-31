@@ -518,7 +518,10 @@ export const graffitiPath = (pubkey) => `/eth/v1/validator/${pubkey}/graffiti`
 /** The consensus graffiti field is 32 BYTES, not 32 characters - emoji cost 4 each. */
 export const GRAFFITI_MAX_BYTES = 32
 export const graffitiByteLength = (text) => Buffer.byteLength(String(text ?? ''), 'utf8')
-export const isValidGraffiti = (text) => graffitiByteLength(text) <= GRAFFITI_MAX_BYTES
+// Control characters have no place in a graffiti, and a newline would split a graffiti-file line.
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/
+export const isValidGraffiti = (text) => graffitiByteLength(text) <= GRAFFITI_MAX_BYTES && !CONTROL_CHARS.test(String(text ?? ''))
 
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
@@ -530,12 +533,26 @@ export function isValidFeeRecipient(address) {
 }
 
 /**
+ * Did the answer carry an error despite its status? Lighthouse answers 202 to a graffiti write it
+ * refuses (it reads graffiti from --graffiti-file, which stereum always sets) and puts the real
+ * verdict in the body as `{ code: 400, message }`. Only a JSON body with a numeric `code >= 400`
+ * counts, so an empty 204 or a plain success body never trips it.
+ */
+export function bodyCarriesError(body) {
+    if (body === undefined || body === null || body === '') return false
+    try {
+        const code = Number(JSON.parse(body)?.code)
+        return Number.isFinite(code) && code >= 400
+    } catch { return false }
+}
+
+/**
  * Did a keymanager WRITE succeed?
  *
  * The spec says 202 for POST and 204 for DELETE, but Prysm answers 200 for both. Rather than
- * branch per client, accept any 2xx - no client uses a 2xx to mean failure.
+ * branch per client, accept any 2xx - unless the body says otherwise (see bodyCarriesError).
  */
-export const isWriteSuccess = (httpCode) => httpCode >= 200 && httpCode < 300
+export const isWriteSuccess = (httpCode, body) => httpCode >= 200 && httpCode < 300 && !bodyCarriesError(body)
 
 /**
  * Did a graffiti/fee-recipient CLEAR succeed? Prysm returns 404 when there was nothing set,
@@ -543,7 +560,7 @@ export const isWriteSuccess = (httpCode) => httpCode >= 200 && httpCode < 300
  * the action on a prior successful GET: a 404 from a client that lacks the route entirely never
  * reaches here, because such a service is not offered the action in the first place.
  */
-export const isClearSuccess = (httpCode) => isWriteSuccess(httpCode) || httpCode === 404
+export const isClearSuccess = (httpCode, body) => isWriteSuccess(httpCode, body) || httpCode === 404
 
 /**
  * Parse GET feerecipient. Returns `{ value }`, or `{ unset: true }`.

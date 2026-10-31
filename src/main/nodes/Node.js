@@ -43,6 +43,10 @@ import {
     STEREUM_SETTINGS_PATH, buildUpdateStateScript, parseUpdateState, validateUpdatePatch, applyUpdatePatch,
 } from "@main/nodes/updateSettings";
 import {
+    graffitiFilePath, parseGraffitiFile, updateGraffitiFile, graffitiFromFile,
+    buildGraffitiReadCommand, buildGraffitiWriteCommands,
+} from "@main/nodes/graffitiFile";
+import {
     epochFromSlot, exitEligibility, parseSignedExit, exitBroadcastBody,
     isExitAccepted, exitStatusMessage, VOLUNTARY_EXIT_PATH, EXIT_POOL_PATH,
 } from "@main/nodes/voluntaryExit";
@@ -629,20 +633,37 @@ export class Node {
 
         const fee = await this._keymanagerBatch(serviceId, c.config, pubkeys, (pubkey) => ({ method: 'GET', path: feeRecipientPath(pubkey) }))
         if (fee.error) return { ok: false, error: fee.error, settings: {} }
-        const graffiti = await this._keymanagerBatch(serviceId, c.config, pubkeys, (pubkey) => ({ method: 'GET', path: graffitiPath(pubkey) }))
-        if (graffiti.error) return { ok: false, error: graffiti.error, settings: {} }
+
+        // Lighthouse with a graffiti file: the file is what it proposes with, and the keymanager
+        // graffiti route is refused while the flag is set, so the file is the only source.
+        const filePath = graffitiFilePath(c.config)
+        let fromFile = null
+        let graffiti = null
+        if (filePath) {
+            const read = await this.sshService.exec(buildGraffitiReadCommand(filePath))
+            fromFile = parseGraffitiFile(read.stdout)
+        } else {
+            graffiti = await this._keymanagerBatch(serviceId, c.config, pubkeys, (pubkey) => ({ method: 'GET', path: graffitiPath(pubkey) }))
+            if (graffiti.error) return { ok: false, error: graffiti.error, settings: {} }
+        }
 
         let graffitiSupported = true
         const settings = {}
         for (const pubkey of pubkeys) {
             const f = fee.responses[pubkey]
-            const g = graffiti.responses[pubkey]
             const parsedFee = f ? parseFeeRecipient(f.httpCode, f.body) : { error: 'No response' }
-            const parsedGraffiti = g ? parseGraffiti(g.httpCode, g.body) : { error: 'No response' }
-            if (parsedGraffiti.unsupported) graffitiSupported = false
+            let graffitiValue = null
+            if (fromFile) {
+                graffitiValue = graffitiFromFile(fromFile, pubkey)
+            } else {
+                const g = graffiti.responses[pubkey]
+                const parsedGraffiti = g ? parseGraffiti(g.httpCode, g.body) : { error: 'No response' }
+                if (parsedGraffiti.unsupported) graffitiSupported = false
+                graffitiValue = parsedGraffiti.value ?? null
+            }
             settings[pubkey] = {
                 feeRecipient: parsedFee.value ?? null,
-                graffiti: parsedGraffiti.value ?? null,
+                graffiti: graffitiValue,
             }
         }
         return { ok: true, settings, graffitiSupported }
@@ -667,13 +688,20 @@ export class Node {
     /** Set or clear graffiti. `text = null` clears the override. Capped at 32 BYTES, not chars. */
     async setGraffiti(serviceId, pubkeys = [], text = null) {
         const clearing = text === null
-        if (!clearing && !isValidGraffiti(text)) {
+        if (!clearing && graffitiByteLength(text) > GRAFFITI_MAX_BYTES) {
             return { ok: false, error: `Graffiti must be at most ${GRAFFITI_MAX_BYTES} bytes (this is ${graffitiByteLength(text)})` }
         }
+        if (!clearing && !isValidGraffiti(text)) return { ok: false, error: 'Graffiti cannot contain control characters' }
+
+        const c = await this._validatorConfig(serviceId, { write: true })
+        if (c.error) return { ok: false, error: c.error }
+        const filePath = graffitiFilePath(c.config)
+        if (filePath) return this._setGraffitiInFile(filePath, pubkeys, clearing ? null : text)
+
         return this._applyValidatorWrite(serviceId, pubkeys, (pubkey) => (clearing
             ? { method: 'DELETE', path: graffitiPath(pubkey) }
             : { method: 'POST', path: graffitiPath(pubkey), body: { graffiti: text } }
-        ), clearing)
+        ), clearing, c)
     }
 
     /**
@@ -982,9 +1010,34 @@ export class Node {
         return { ok: true, results }
     }
 
+    /**
+     * Set (text) or remove (null) the keys' lines in Lighthouse's graffiti file. Read-modify-write
+     * of one small file, so every key shares the outcome. Lighthouse re-reads it per proposal.
+     */
+    async _setGraffitiInFile(path, pubkeys, text) {
+        const keys = [...new Set(pubkeys.map((p) => String(p).toLowerCase()))].filter(isValidPubkey)
+        if (!keys.length) return { ok: false, error: 'No keys selected' }
+
+        const before = await this.sshService.exec(buildGraffitiReadCommand(path))
+        if (before.rc !== 0 && before.rc !== null) return { ok: false, error: 'Could not read the Lighthouse graffiti file' }
+        const next = updateGraffitiFile(before.stdout, new Map(keys.map((k) => [k, text])))
+
+        const { mkdir, write } = buildGraffitiWriteCommands(path)
+        let res = await this.sshService.exec(mkdir)
+        if (res.rc === 0 || res.rc === null) res = await this.sshService.exec(write, true, { input: next })
+        const written = res.rc === 0 || res.rc === null
+        const outcome = written ? { ok: true } : { ok: false, error: `Writing ${path} failed${res.stderr ? `: ${String(res.stderr).trim()}` : ''}` }
+
+        const results = {}
+        for (const pubkey of pubkeys) {
+            results[pubkey] = isValidPubkey(String(pubkey).toLowerCase()) ? outcome : { ok: false, error: 'No response from the client' }
+        }
+        return { ok: true, results }
+    }
+
     /** Shared tail of the per-key write ops: batch, then judge each response on its own status. */
-    async _applyValidatorWrite(serviceId, pubkeys, makeRequest, clearing) {
-        const c = await this._validatorConfig(serviceId, { write: true })
+    async _applyValidatorWrite(serviceId, pubkeys, makeRequest, clearing, resolved = null) {
+        const c = resolved ?? await this._validatorConfig(serviceId, { write: true })
         if (c.error) return { ok: false, error: c.error }
         if (!pubkeys.length) return { ok: false, error: 'No keys selected' }
 
@@ -995,7 +1048,7 @@ export class Node {
         for (const pubkey of pubkeys) {
             const r = batch.responses[pubkey]
             if (!r) { results[pubkey] = { ok: false, error: 'No response from the client' }; continue }
-            const succeeded = clearing ? isClearSuccess(r.httpCode) : isWriteSuccess(r.httpCode)
+            const succeeded = clearing ? isClearSuccess(r.httpCode, r.body) : isWriteSuccess(r.httpCode, r.body)
             results[pubkey] = succeeded ? { ok: true } : { ok: false, error: keymanagerHttpError(r) }
         }
         return { ok: true, results }

@@ -22,6 +22,7 @@ import {
     isValidGraffiti,
     graffitiByteLength,
     isWriteSuccess,
+    bodyCarriesError,
     isClearSuccess,
     parseFeeRecipient,
     parseGraffiti,
@@ -378,6 +379,23 @@ describe('fee recipient / graffiti helpers', () => {
         expect(isWriteSuccess(204)).toBe(true)
         expect(isWriteSuccess(200)).toBe(true)
         expect(isWriteSuccess(403)).toBe(false)
+    })
+
+    it('fails a 2xx whose body carries an error (Lighthouse 202 on a refused graffiti)', () => {
+        const refused = '{"code":400,"message":"BAD_REQUEST: graffiti file in use","stacktraces":[]}'
+        expect(isWriteSuccess(202, refused)).toBe(false)
+        expect(isClearSuccess(202, refused)).toBe(false)
+        expect(isWriteSuccess(202, '')).toBe(true)
+        expect(isWriteSuccess(200, '{"data":{}}')).toBe(true)
+        expect(isWriteSuccess(202, 'not json')).toBe(true)
+        expect(bodyCarriesError('{"code":"500"}')).toBe(true)
+        expect(bodyCarriesError('{"code":200}')).toBe(false)
+    })
+
+    it('refuses control characters in a graffiti', () => {
+        expect(isValidGraffiti('line\nbreak')).toBe(false)
+        expect(isValidGraffiti('tab\there')).toBe(false)
+        expect(isValidGraffiti('plain text')).toBe(true)
     })
 
     it('treats 404 on a clear as success, since nothing was set', () => {
