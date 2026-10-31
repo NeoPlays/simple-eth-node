@@ -51,6 +51,9 @@ import {
     isExitAccepted, exitStatusMessage, VOLUNTARY_EXIT_PATH, EXIT_POOL_PATH,
     usesPrysmRestExit, prysmExitEpoch, PRYSM_EXIT_ISSUE,
 } from "@main/nodes/voluntaryExit";
+import {
+    isServiceId, configPath, checkServiceConfig, buildBackupCommand, buildBackupReadCommand, parseBackupRead,
+} from "@main/nodes/serviceConfig";
 import YAML from 'yaml';
 import { randomUUID } from "crypto";
 import log from 'electron-log';
@@ -232,11 +235,32 @@ export class Node {
         return response.stdout
     }
 
+    /**
+     * Replace a service config. Refuses content that is certainly broken (checkServiceConfig) and
+     * keeps the file it replaces under /etc/stereum-lite/config-backups first; if that copy fails,
+     * nothing is written. The content goes over stdin, never through the shell.
+     */
     async writeServiceConfig(serviceId, content) {
-        const b64 = Buffer.from(content).toString('base64')
-        const path = `/etc/stereum/services/${serviceId}.yaml`
-        const response = await this.sshService.exec(`echo '${b64}' | base64 -d | sudo tee ${path} > /dev/null`, false)
-        if (response.rc !== 0) throw new Error(response.stderr || `writeServiceConfig failed for ${serviceId}`)
+        if (!isServiceId(serviceId)) throw new Error(`Invalid service id: ${serviceId}`)
+        const problems = checkServiceConfig(content, serviceId)
+        if (problems.length) throw new Error(problems.join(' '))
+
+        const backup = await this.sshService.exec(buildBackupCommand(serviceId))
+        if (backup.rc !== 0 && backup.rc !== null) {
+            throw new Error(`Could not back up the current config, nothing was written${backup.stderr ? `: ${String(backup.stderr).trim()}` : ''}`)
+        }
+        const response = await this.sshService.exec(`tee ${configPath(serviceId)} > /dev/null`, true, { input: String(content) })
+        if (response.rc !== 0 && response.rc !== null) throw new Error(response.stderr || `writeServiceConfig failed for ${serviceId}`)
+    }
+
+    /**
+     * The config as it was before the last write from lite, for review and restore.
+     * @returns {Promise<{ exists: boolean, content?: string, savedAt?: number }>}
+     */
+    async fetchServiceConfigBackup(serviceId) {
+        if (!isServiceId(serviceId)) throw new Error(`Invalid service id: ${serviceId}`)
+        const res = await this.sshService.exec(buildBackupReadCommand(serviceId))
+        return parseBackupRead(res.stdout)
     }
 
     /**

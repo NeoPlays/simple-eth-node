@@ -210,20 +210,47 @@ describe('Node', () => {
     })
 
     describe('writeServiceConfig', () => {
-        it('base64-encodes content and pipes to sudo tee', async () => {
-            node.sshService.exec.mockResolvedValueOnce(ok())
-            await node.writeServiceConfig('abc', 'hello: world')
-            const cmd = node.sshService.exec.mock.calls[0][0]
-            const expectedB64 = Buffer.from('hello: world').toString('base64')
-            expect(cmd).toContain(expectedB64)
-            expect(cmd).toContain('/etc/stereum/services/abc.yaml')
-            expect(cmd).toContain('sudo tee')
-            // useSudo=false so caller controls sudo
-            expect(node.sshService.exec.mock.calls[0][1]).toBe(false)
+        const GOOD = 'id: abc\nservice: GethService\n'
+
+        it('backs up the current file, then writes the new one over stdin', async () => {
+            node.sshService.exec.mockResolvedValue(ok())
+            await node.writeServiceConfig('abc', GOOD)
+            const [backup, write] = node.sshService.exec.mock.calls
+            expect(backup[0]).toContain('cp -p /etc/stereum/services/abc.yaml /etc/stereum-lite/config-backups/abc.yaml')
+            expect(write[0]).toBe('tee /etc/stereum/services/abc.yaml > /dev/null')
+            expect(write[2].input).toBe(GOOD)
         })
-        it('throws on rc != 0', async () => {
-            node.sshService.exec.mockResolvedValueOnce(fail('readonly fs'))
-            await expect(node.writeServiceConfig('abc', 'x')).rejects.toThrow('readonly fs')
+
+        it('writes nothing when the backup fails', async () => {
+            node.sshService.exec.mockResolvedValueOnce(fail('no such file'))
+            await expect(node.writeServiceConfig('abc', GOOD)).rejects.toThrow(/nothing was written/)
+            expect(node.sshService.exec).toHaveBeenCalledTimes(1)
+        })
+
+        it('refuses broken YAML, a changed id, or a bad service id before touching the node', async () => {
+            await expect(node.writeServiceConfig('abc', 'service: [unclosed')).rejects.toThrow(/Not valid YAML/)
+            await expect(node.writeServiceConfig('abc', 'id: other\nservice: GethService\n')).rejects.toThrow(/must stay abc/)
+            await expect(node.writeServiceConfig('../x', GOOD)).rejects.toThrow(/Invalid service id/)
+            expect(node.sshService.exec).not.toHaveBeenCalled()
+        })
+
+        it('throws on a failed write', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok()).mockResolvedValueOnce(fail('readonly fs'))
+            await expect(node.writeServiceConfig('abc', GOOD)).rejects.toThrow('readonly fs')
+        })
+    })
+
+    describe('fetchServiceConfigBackup', () => {
+        it('returns the previous version with its time', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok('1700000000\nid: abc\nservice: GethService\n'))
+            expect(await node.fetchServiceConfigBackup('abc')).toEqual({
+                exists: true, savedAt: 1700000000, content: 'id: abc\nservice: GethService\n',
+            })
+        })
+
+        it('reports no backup when there is none', async () => {
+            node.sshService.exec.mockResolvedValueOnce(ok(''))
+            expect(await node.fetchServiceConfigBackup('abc')).toEqual({ exists: false })
         })
     })
 

@@ -144,6 +144,7 @@ describe('ipcHandlers', () => {
             'get-node',
             'get-os-info',
             'get-raw-service-config',
+            'get-service-config-backup',
             'get-system-locale',
             'get-system-metrics',
             'get-tasks',

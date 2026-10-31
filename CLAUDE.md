@@ -45,6 +45,7 @@ src/
 │   ├── nodes/voluntaryExit.js   # Exit eligibility + two-step payload shapes (pure)
 │   ├── nodes/updateSettings.js  # stereum.yaml update policy: state-read script, cron parse/drift, patch validate/apply (pure)
 │   ├── nodes/graffitiFile.js    # Lighthouse --graffiti-file path/parse/update (pure) - Lighthouse graffiti reads + writes
+│   ├── nodes/serviceConfig.js   # Config-edit safety net: checkServiceConfig + backup paths/commands (pure)
 │   ├── tasks/TaskManager.js     # Singleton task registry (wraps long ops, parses stereumjson sub-tasks)
 │   ├── ssh/SSHService.js        # ssh2 connection pool
 │   └── store/StoreService.js    # electron-store wrapper
@@ -57,6 +58,7 @@ src/
     │   ├── useNodeMetrics.js    # view-scoped metrics polling (system 5s, client 5s, disk 30s)
     │   └── useValidatorKeys.js  # per-service validator-key cache: load() (keys) + loadStates() (beacon enrichment)
     ├── utils/
+    │   ├── lineDiff.js          # LCS line diff + context folding for the config editor's review step
     │   ├── serviceCategory.js   # service-type -> category (EC/CC/VC/other); groupServices() (setup->category, shared/commonServices setup last)
     │   ├── checkpointProviders.js  # public checkpoint-sync providers per network (resync modal)
     │   ├── validatorSetup.js    # classifyValidatorSetup() -> solo/remote-signer/obol/ssv; isSoloEligible, holdsOnChainValidators
@@ -128,7 +130,8 @@ New channels must be added to **both** `ipcHandlers.js` and `ipcChannelWhitelist
 | `get-dvt-validator-states`                           | nodeId, serviceId, shares[], beaconUrl? | `{ ok, states: { [share]: stat }, dvByShare: { [share]: dvPubkey }, source, base, lookupError?, dvt, error? }` - stats via the DVT client, DV pubkeys by index on a real beacon |
 | `check-keys-onchain`                                 | nodeId, pubkeys[], beaconUrl?    | `{ ok, results: { [pubkey]: { verdict: 'active' \| 'inactive' \| 'pending' \| 'not-on-chain' \| 'unknown', index?, signedIn[], uncheckedEpochs[] } }, counts, currentEpoch, epochs, base, source, error? }` - did the key sign in the current epoch or the 3 before (see "On-chain activity gate") |
 | `get-raw-service-config`                             | nodeId, serviceId                | YAML string                                                                                                                    |
-| `write-service-config`                               | nodeId, serviceId, content       | -                                                                                                                              |
+| `write-service-config`                               | nodeId, serviceId, content       | - (throws). Refuses broken YAML / a non-mapping / missing `service` / a changed `id`, then copies the current file to `/etc/stereum-lite/config-backups/<id>.yaml` (no copy, no write) and writes over stdin |
+| `get-service-config-backup`                          | nodeId, serviceId                | `{ ok, exists, content?, savedAt? }` - the version before the last write from lite (savedAt = unix seconds) |
 | `fetch-updates-manifest`                             | lane?                            | parsed `stereum.com/downloads/updates.json`, or `updates.dev.json` for `lane: 'dev'` (5min cache per lane, main-process fetched via `electron.net`) |
 | `get-update-settings`                                | nodeId                           | `{ yamlError, updates: { lane, laneRaw, unattended: { install, interval_days, hour, min } }, cron: { present, disabled?, line?, min, hour, interval_days }, drift: 'ok' \| 'missing' \| 'stale' \| 'mismatch' \| null, controlsPath, arch, server: { now, offsetMinutes, timeZone } }` - one sudo exec; see `## Update policy` |
 | `get-os-info`                                        | nodeId                           | OS distro + version string (e.g. `Ubuntu 22.04.3 LTS`) from `/etc/os-release` `PRETTY_NAME`                                    |

@@ -551,6 +551,17 @@ export function initializeIpcHandlers() {
         }
     });
 
+    ipcMain.handle('get-service-config-backup', async (_, nodeId, serviceId) => {
+        try {
+            const node = nodeManager.findNode(nodeId)
+            if (!node) throw new Error('Node not found')
+            return { ok: true, ...(await node.fetchServiceConfigBackup(serviceId)) }
+        } catch (error) {
+            log.error('get-service-config-backup error:', error)
+            return { ok: false, exists: false, error: error.message || 'Could not read the backup' }
+        }
+    });
+
     ipcMain.handle('write-service-config', async (_, nodeId, serviceId, content) => {
         try {
             const node = nodeManager.findNode(nodeId)
