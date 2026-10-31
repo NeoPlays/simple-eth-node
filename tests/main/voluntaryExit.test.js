@@ -11,6 +11,9 @@ import {
     exitBroadcastBody,
     isExitAccepted,
     exitStatusMessage,
+    usesPrysmRestExit,
+    prysmExitEpoch,
+    MAX_SYNC_DISTANCE,
 } from '@main/nodes/voluntaryExit'
 
 // An eligible baseline: active, activated long ago, execution withdrawal credentials.
@@ -290,5 +293,70 @@ describe('exitStatusMessage', () => {
 
     it('reports no response when curl never got a status', () => {
         expect(exitStatusMessage(0, '')).toMatch(/did not respond/i)
+    })
+})
+
+describe('Prysm exit workaround (prysm#17691)', () => {
+    it('adds the epoch to the sign path only when given', () => {
+        expect(VOLUNTARY_EXIT_PATH('0xabc', 194048)).toBe('/eth/v1/validator/0xabc/voluntary_exit?epoch=194048')
+        expect(VOLUNTARY_EXIT_PATH('0xabc', null)).toBe('/eth/v1/validator/0xabc/voluntary_exit')
+        expect(VOLUNTARY_EXIT_PATH('0xabc', 0)).toBe('/eth/v1/validator/0xabc/voluntary_exit?epoch=0')
+    })
+
+    it('applies only to Prysm in REST mode', () => {
+        expect(usesPrysmRestExit({ service: 'PrysmValidatorService', command: ['--enable-beacon-rest-api'] })).toBe(true)
+        expect(usesPrysmRestExit({ service: 'PrysmValidatorService', command: '--foo --enable-beacon-rest-api=true' })).toBe(true)
+        expect(usesPrysmRestExit({ service: 'PrysmValidatorService', command: ['--beacon-rpc-provider=x'] })).toBe(false)
+        expect(usesPrysmRestExit({ service: 'TekuValidatorService', command: ['--enable-beacon-rest-api'] })).toBe(false)
+    })
+
+    it("signs at Capella's epoch only where Capella precedes Deneb", () => {
+        expect(prysmExitEpoch({ capellaForkEpoch: 194048, denebForkEpoch: 269568 })).toBe(194048) // mainnet
+        expect(prysmExitEpoch({ capellaForkEpoch: 56832, denebForkEpoch: 132608 })).toBe(56832) // sepolia
+        expect(prysmExitEpoch({ capellaForkEpoch: 0, denebForkEpoch: 0 })).toBeNull() // hoodi
+        expect(prysmExitEpoch({ capellaForkEpoch: 194048, denebForkEpoch: null })).toBeNull()
+        expect(prysmExitEpoch({})).toBeNull()
+    })
+})
+
+describe('exitEligibility beacon stall and client blockers', () => {
+    const ctx = { currentEpoch: 100000 }
+
+    it('blocks when the execution client is offline', () => {
+        const r = exitEligibility(ACTIVE, { ...ctx, beaconElOffline: true })
+        expect(r.eligible).toBe(false)
+        expect(r.reasons.join(' ')).toMatch(/execution client offline/)
+    })
+
+    it('blocks when the head trails by more than the allowed distance, not at it', () => {
+        expect(exitEligibility(ACTIVE, { ...ctx, beaconSyncDistance: MAX_SYNC_DISTANCE }).eligible).toBe(true)
+        const r = exitEligibility(ACTIVE, { ...ctx, beaconSyncDistance: MAX_SYNC_DISTANCE + 1 })
+        expect(r.eligible).toBe(false)
+        expect(r.reasons.join(' ')).toMatch(/slots behind/)
+    })
+
+    it('ignores an unknown sync distance', () => {
+        expect(exitEligibility(ACTIVE, { ...ctx, beaconSyncDistance: null }).eligible).toBe(true)
+    })
+
+    it('blocks on a client blocker regardless of chain state', () => {
+        const r = exitEligibility(ACTIVE, { ...ctx, clientBlocker: 'Prysm cannot sign here' })
+        expect(r.eligible).toBe(false)
+        expect(r.reasons).toContain('Prysm cannot sign here')
+    })
+})
+
+describe('parseSignedExit expected index', () => {
+    const body = JSON.stringify({ data: SIGNED_EXIT })
+
+    it('accepts the expected validator, as number or string', () => {
+        expect(parseSignedExit(body, 1234).ok).toBe(true)
+        expect(parseSignedExit(body, '1234').ok).toBe(true)
+    })
+
+    it('refuses an exit signed for another validator', () => {
+        const r = parseSignedExit(body, 1235)
+        expect(r.ok).toBe(false)
+        expect(r.error).toMatch(/index 1234, expected 1235/)
     })
 })

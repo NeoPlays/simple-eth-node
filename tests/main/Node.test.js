@@ -1676,6 +1676,96 @@ describe('Node', () => {
         })
     })
 
+    describe('submitVoluntaryExit client and beacon guards', () => {
+        const PK_A = '0x' + 'a'.repeat(96)
+        const LH_YAML = 'service: LighthouseValidatorService\ncommand:\n  - --http\n'
+        const PRYSM_YAML = [
+            'service: PrysmValidatorService',
+            'command:',
+            '  - --http-host=0.0.0.0',
+            '  - --http-port=7500',
+            '  - --keymanager-token-file=/opt/app/data/wallets/auth-token',
+            '  - --enable-beacon-rest-api',
+            'volumes:',
+            '  - /opt/stereum/prysm/wallets:/opt/app/data/wallets',
+        ].join('\n') + '\n'
+        const SPEC_MAINNET = '{"data":{"CAPELLA_FORK_EPOCH":"194048","DENEB_FORK_EPOCH":"269568"}}'
+        const SPEC_HOODI = '{"data":{"CAPELLA_FORK_EPOCH":"0","DENEB_FORK_EPOCH":"0"}}'
+        const syncing = (extra = '') => `{"data":{"head_slot":"32000000","is_syncing":false,"is_optimistic":false${extra}}}`
+        const STATE = `{"data":[{"index":"7","status":"active_ongoing","balance":"32000000000","validator":{"pubkey":"${PK_A}","activation_epoch":"1","withdrawal_credentials":"0x0100"}}]}\n===VSTATE_HTTP===200\n===VSTATE_CHUNK===\n`
+        const signed = (index) => `{"data":{"message":{"epoch":"1000000","validator_index":"${index}"},"signature":"0x${'cd'.repeat(96)}"}}\n200`
+
+        // Wires a node answering by command content; returns the stdin configs it was sent.
+        function wire({ yaml, spec = SPEC_MAINNET, syncingBody = syncing(), signedIndex = 7 }) {
+            const inputs = []
+            node.sshService.exec = vi.fn(async (cmd, sudo, opts) => {
+                if (opts?.input) inputs.push(opts.input)
+                if (cmd.includes('cat /etc/stereum/services/')) return ok(yaml)
+                if (cmd.startsWith('docker exec') || cmd.includes('auth-token')) return ok('TOKEN')
+                if (cmd.includes('beacon/genesis')) {
+                    return ok(`{"data":{"genesis_validators_root":"0xbeef"}}\n===BCTX===\n${syncingBody}\n===BCTX===\n${spec}`)
+                }
+                if (opts?.input?.includes('pool/voluntary_exits')) return ok('\n200')
+                if (opts?.input?.includes('voluntary_exit')) return ok(signed(signedIndex))
+                return ok(STATE)
+            })
+            vi.spyOn(node, '_resolveBeaconBase').mockResolvedValue({ base: 'http://beacon:5052', source: 'node' })
+            // A solo client: the remote-Charon refusal is tested on its own.
+            vi.spyOn(node, '_dvtBehind').mockResolvedValue(null)
+            return inputs
+        }
+        const signInput = (inputs) => inputs.find((i) => i.includes('/voluntary_exit') && !i.includes('pool/'))
+        const broadcast = (inputs) => inputs.some((i) => i.includes('pool/voluntary_exits'))
+
+        it("asks Prysm to sign at Capella's epoch", async () => {
+            const inputs = wire({ yaml: PRYSM_YAML })
+            const r = await node.submitVoluntaryExit('svc', [PK_A])
+            expect(r.results[PK_A].ok).toBe(true)
+            expect(signInput(inputs)).toContain('voluntary_exit?epoch=194048')
+        })
+
+        it('leaves the epoch out for other clients', async () => {
+            const inputs = wire({ yaml: LH_YAML })
+            await node.submitVoluntaryExit('svc', [PK_A])
+            expect(signInput(inputs)).toContain(`${PK_A}/voluntary_exit"`)
+        })
+
+        it('blocks Prysm where Deneb starts with Capella, before anything is signed', async () => {
+            const inputs = wire({ yaml: PRYSM_YAML, spec: SPEC_HOODI })
+            const r = await node.submitVoluntaryExit('svc', [PK_A])
+            expect(r.results[PK_A].ok).toBe(false)
+            expect(r.results[PK_A].error).toContain('cannot sign a valid exit')
+            expect(signInput(inputs)).toBeUndefined()
+        })
+
+        it('blocks Prysm when the beacon does not report the fork epochs', async () => {
+            const inputs = wire({ yaml: PRYSM_YAML, spec: 'not json' })
+            const r = await node.submitVoluntaryExit('svc', [PK_A])
+            expect(r.results[PK_A].ok).toBe(false)
+            expect(signInput(inputs)).toBeUndefined()
+        })
+
+        it('blocks when the beacon head trails or its execution client is offline', async () => {
+            let inputs = wire({ yaml: LH_YAML, syncingBody: syncing(',"sync_distance":"40"') })
+            let r = await node.submitVoluntaryExit('svc', [PK_A])
+            expect(r.results[PK_A].error).toMatch(/40 slots behind/)
+            expect(signInput(inputs)).toBeUndefined()
+
+            inputs = wire({ yaml: LH_YAML, syncingBody: syncing(',"el_offline":true') })
+            r = await node.submitVoluntaryExit('svc', [PK_A])
+            expect(r.results[PK_A].error).toMatch(/execution client offline/)
+            expect(signInput(inputs)).toBeUndefined()
+        })
+
+        it('never broadcasts an exit signed for another validator', async () => {
+            const inputs = wire({ yaml: LH_YAML, signedIndex: 8 })
+            const r = await node.submitVoluntaryExit('svc', [PK_A])
+            expect(r.results[PK_A].ok).toBe(false)
+            expect(r.results[PK_A].error).toMatch(/index 8, expected 7/)
+            expect(broadcast(inputs)).toBe(false)
+        })
+    })
+
     describe('_resolveBeaconBase', () => {
         const CL_ID = 'aaaaaaaa-0000-0000-0000-aaaaaaaaaaaa'
         const VC_ID = 'bbbbbbbb-0000-0000-0000-bbbbbbbbbbbb'

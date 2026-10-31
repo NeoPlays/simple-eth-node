@@ -11,9 +11,11 @@
  *      Success is 200 with an EMPTY body.
  *
  * Two hazards this module encodes so they cannot be re-learned the hard way:
- * - The step-1 `epoch` query parameter is deliberately OMITTED. Letting the client use its own
- *   slot clock is the only reliable choice: a past epoch drags Teku's signing fork backward and
- *   a future one is rejected as FutureEpoch.
+ * - The step-1 `epoch` query parameter is OMITTED for every client but Prysm. Letting the client
+ *   use its own slot clock is the reliable choice: a past epoch drags Teku's signing fork backward
+ *   and a future one is rejected as FutureEpoch. Prysm over REST is the exception: it signs with the
+ *   domain of the fork AT the requested epoch instead of Capella's as EIP-7044 requires
+ *   (OffchainLabs/prysm#17691), so it must be asked for the Capella fork epoch - see prysmExitEpoch.
  * - Step 2's body is the `data` object itself. Re-wrapping it in `{"data":...}` yields a 400
  *   whose text reads like a signature failure, which sends debugging in entirely the wrong
  *   direction. exitBroadcastBody exists so that unwrapping rule is written down exactly once.
@@ -27,7 +29,37 @@ export const SLOTS_PER_EPOCH = 32
 // The uint64 max, used by the beacon spec as "never" for activation/exit epochs.
 export const FAR_FUTURE_EPOCH = '18446744073709551615'
 
-export const VOLUNTARY_EXIT_PATH = (pubkey) => `/eth/v1/validator/${pubkey}/voluntary_exit`
+export const VOLUNTARY_EXIT_PATH = (pubkey, epoch = null) =>
+    `/eth/v1/validator/${pubkey}/voluntary_exit${epoch != null ? `?epoch=${epoch}` : ''}`
+
+// Slots the head may trail the clock before its view is distrusted. Missed blocks leave small
+// gaps; a stopped execution client leaves a growing one. Needed because Prysm keeps reporting
+// is_syncing / is_optimistic / el_offline as false for minutes after its EL stops (upstream
+// stereum, verified on a real node).
+export const MAX_SYNC_DISTANCE = 16
+
+export const PRYSM_EXIT_ISSUE = 'https://github.com/OffchainLabs/prysm/issues/17691'
+
+/**
+ * Does this validator client need the Prysm exit workaround? Stereum always runs Prysm's VC with
+ * `--enable-beacon-rest-api`, the mode the bug is in; the gRPC path signs correctly.
+ */
+export function usesPrysmRestExit(config) {
+    if (config?.service !== 'PrysmValidatorService') return false
+    const command = Array.isArray(config.command) ? config.command : String(config.command ?? '').split(/\s+/)
+    return command.some((c) => c === '--enable-beacon-rest-api' || c === '--enable-beacon-rest-api=true')
+}
+
+/**
+ * The epoch to ask Prysm to sign an exit for: Capella's, which yields the Capella domain - but only
+ * where Capella is the latest fork at that epoch. Where Deneb starts with it (Hoodi: both 0) no
+ * epoch gives the Capella domain, so Prysm cannot sign a valid exit there: null, and the caller
+ * blocks. Also null when the beacon did not report the fork epochs (fail closed).
+ */
+export function prysmExitEpoch({ capellaForkEpoch, denebForkEpoch } = {}) {
+    if (!Number.isFinite(capellaForkEpoch) || !Number.isFinite(denebForkEpoch)) return null
+    return capellaForkEpoch < denebForkEpoch ? capellaForkEpoch : null
+}
 export const EXIT_POOL_PATH = '/eth/v1/beacon/pool/voluntary_exits'
 
 // 32 slots x 12s. Only ever used to phrase a wait as human time, never for consensus math.
@@ -83,7 +115,10 @@ function approxDuration(epochs) {
  *
  * @returns {{ eligible: boolean, reasons: string[], warnings: string[] }}
  */
-export function exitEligibility(validator, { currentEpoch = null, beaconSyncing = false, beaconOptimistic = false } = {}) {
+export function exitEligibility(validator, {
+    currentEpoch = null, beaconSyncing = false, beaconOptimistic = false,
+    beaconElOffline = false, beaconSyncDistance = null, clientBlocker = null,
+} = {}) {
     const reasons = []
     const warnings = []
     const v = validator || {}
@@ -130,6 +165,15 @@ export function exitEligibility(validator, { currentEpoch = null, beaconSyncing 
     if (beaconOptimistic) {
         reasons.push('Beacon node is optimistic (its execution client has not verified the head), so its view of this validator may be wrong.')
     }
+    if (beaconElOffline) {
+        reasons.push('Beacon node reports its execution client offline, so its view of this validator may be out of date.')
+    }
+    const distance = Number(beaconSyncDistance)
+    if (beaconSyncDistance != null && Number.isFinite(distance) && distance > MAX_SYNC_DISTANCE) {
+        reasons.push(`Beacon node head is ${distance} slots behind the chain (more than ${MAX_SYNC_DISTANCE}), so its view of this validator may be out of date - is its execution client running?`)
+    }
+    // Independent of chain state: the validator client itself cannot sign a valid exit here.
+    if (clientBlocker) reasons.push(clientBlocker)
 
     // Warn, never block: the exit itself succeeds with 0x00 credentials, but the withdrawal cannot
     // happen until a separate BLSToExecutionChange sets an execution address.
@@ -150,7 +194,7 @@ export function exitEligibility(validator, { currentEpoch = null, beaconSyncing 
  *
  * @returns {{ ok: true, signedExit: object }|{ ok: false, error: string }}
  */
-export function parseSignedExit(body) {
+export function parseSignedExit(body, expectedIndex = null) {
     let json = body
     if (typeof body === 'string') {
         try { json = JSON.parse(body) } catch { return { ok: false, error: 'Unreadable voluntary exit response from the validator client' } }
@@ -174,6 +218,10 @@ export function parseSignedExit(body) {
     }
     if (typeof data.signature !== 'string' || data.signature === '') {
         return { ok: false, error: 'Signed exit is missing "signature"' }
+    }
+    // Never broadcast an exit for a validator other than the one asked for.
+    if (expectedIndex != null && message.validator_index !== String(expectedIndex)) {
+        return { ok: false, error: `Validator client signed an exit for index ${message.validator_index}, expected ${expectedIndex} - not sent` }
     }
     return { ok: true, signedExit: data }
 }

@@ -49,6 +49,7 @@ import {
 import {
     epochFromSlot, exitEligibility, parseSignedExit, exitBroadcastBody,
     isExitAccepted, exitStatusMessage, VOLUNTARY_EXIT_PATH, EXIT_POOL_PATH,
+    usesPrysmRestExit, prysmExitEpoch, PRYSM_EXIT_ISSUE,
 } from "@main/nodes/voluntaryExit";
 import YAML from 'yaml';
 import { randomUUID } from "crypto";
@@ -770,10 +771,11 @@ export class Node {
 
         const script = [
             `curl -sS -m 10 '${base}/eth/v1/beacon/genesis' -w '\\n===BCTX===\\n'`,
-            `curl -sS -m 10 '${base}/eth/v1/node/syncing'`,
+            `curl -sS -m 10 '${base}/eth/v1/node/syncing' -w '\\n===BCTX===\\n'`,
+            `curl -sS -m 10 '${base}/eth/v1/config/spec'`,
         ].join(' ; ')
         const res = await this.sshService.exec(wrapSidecar(script), true, { timeoutMs: 30_000 })
-        const [genesisRaw = '', syncingRaw = ''] = String(res.stdout ?? '').split('===BCTX===')
+        const [genesisRaw = '', syncingRaw = '', specRaw = ''] = String(res.stdout ?? '').split('===BCTX===')
 
         let genesisValidatorsRoot = null
         try { genesisValidatorsRoot = JSON.parse(genesisRaw.trim())?.data?.genesis_validators_root ?? null } catch { /* left null */ }
@@ -781,6 +783,8 @@ export class Node {
         let currentEpoch = null
         let syncing = false
         let optimistic = false
+        let elOffline = false
+        let syncDistance = null
         try {
             const d = JSON.parse(syncingRaw.trim())?.data
             currentEpoch = epochFromSlot(d?.head_slot)
@@ -788,12 +792,28 @@ export class Node {
             // missing head_slot is what actually blocks an exit, and that is checked separately.
             syncing = d?.is_syncing === true || d?.is_syncing === 'true'
             optimistic = d?.is_optimistic === true || d?.is_optimistic === 'true'
+            elOffline = d?.el_offline === true || d?.el_offline === 'true'
+            const distance = Number(d?.sync_distance)
+            syncDistance = d?.sync_distance != null && Number.isFinite(distance) ? distance : null
         } catch { /* left as unknown */ }
+
+        // Fork epochs for the Prysm exit workaround; null when the beacon did not report them.
+        let capellaForkEpoch = null
+        let denebForkEpoch = null
+        try {
+            const spec = JSON.parse(specRaw.trim())?.data || {}
+            const epoch = (v) => (v != null && /^\d+$/.test(String(v)) ? Number(v) : null)
+            capellaForkEpoch = epoch(spec.CAPELLA_FORK_EPOCH)
+            denebForkEpoch = epoch(spec.DENEB_FORK_EPOCH)
+        } catch { /* left null */ }
 
         if (genesisValidatorsRoot === null && currentEpoch === null) {
             return { ok: false, error: 'Beacon node did not answer (is it reachable and synced?)', source, base }
         }
-        return { ok: true, genesisValidatorsRoot, currentEpoch, syncing, optimistic, source, base }
+        return {
+            ok: true, genesisValidatorsRoot, currentEpoch, syncing, optimistic, elOffline, syncDistance,
+            capellaForkEpoch, denebForkEpoch, source, base,
+        }
     }
 
     /**
@@ -930,10 +950,24 @@ export class Node {
      * sent. The UI must run this before offering the action, because the most common rejection
      * (activated less than 256 epochs ago) is invisible without it.
      */
-    async getExitPreflight(serviceId, pubkeys = [], { beaconUrl } = {}) {
+    async getExitPreflight(serviceId, pubkeys = [], { beaconUrl, config } = {}) {
         if (!pubkeys.length) return { ok: false, error: 'No keys selected', checks: {} }
+        let vcConfig = config
+        if (!vcConfig) {
+            const c = await this._validatorConfig(serviceId)
+            if (c.error) return { ok: false, error: c.error, checks: {} }
+            vcConfig = c.config
+        }
         const ctx = await this.getBeaconContext({ beaconUrl })
         if (!ctx.ok) return { ok: false, error: ctx.error, checks: {} }
+
+        // Prysm over REST signs exits with the wrong fork domain unless asked for Capella's epoch,
+        // and cannot sign a valid one at all where Deneb starts with Capella (Hoodi).
+        const prysm = usesPrysmRestExit(vcConfig)
+        const signEpoch = prysm ? prysmExitEpoch(ctx) : null
+        const clientBlocker = prysm && signEpoch === null
+            ? `Prysm's validator client cannot sign a valid exit on this network (Capella and Deneb fork epochs ${ctx.capellaForkEpoch ?? 'unknown'} / ${ctx.denebForkEpoch ?? 'unknown'}), see ${PRYSM_EXIT_ISSUE}`
+            : null
 
         const states = await this.getValidatorStates(pubkeys, { beaconUrl })
         if (!states.ok) return { ok: false, error: states.error, checks: {} }
@@ -943,10 +977,15 @@ export class Node {
             const stat = states.states[String(pubkey).toLowerCase()] || {}
             checks[pubkey] = exitEligibility(
                 { ...stat, pubkey },
-                { currentEpoch: ctx.currentEpoch, beaconSyncing: ctx.syncing, beaconOptimistic: ctx.optimistic },
+                {
+                    currentEpoch: ctx.currentEpoch, beaconSyncing: ctx.syncing, beaconOptimistic: ctx.optimistic,
+                    beaconElOffline: ctx.elOffline, beaconSyncDistance: ctx.syncDistance, clientBlocker,
+                },
             )
+            // Carried to submit (main-process only, never trusted from the renderer) for the index check.
+            if (stat.index != null) checks[pubkey].index = stat.index
         }
-        return { ok: true, checks, currentEpoch: ctx.currentEpoch }
+        return { ok: true, checks, currentEpoch: ctx.currentEpoch, signEpoch }
     }
 
     /**
@@ -965,7 +1004,7 @@ export class Node {
         if (c.error) return { ok: false, error: c.error }
         if (!pubkeys.length) return { ok: false, error: 'No keys selected' }
 
-        const preflight = await this.getExitPreflight(serviceId, pubkeys, { beaconUrl })
+        const preflight = await this.getExitPreflight(serviceId, pubkeys, { beaconUrl, config: c.config })
         if (!preflight.ok) return { ok: false, error: preflight.error }
 
         const base = (beaconUrl ? normalizeBeaconUrl(beaconUrl) : null) || (await this._resolveBeaconBase()).base
@@ -984,12 +1023,12 @@ export class Node {
                 continue
             }
             const signed = await this._keymanagerRequest(serviceId, c.config, {
-                method: 'POST', path: VOLUNTARY_EXIT_PATH(pubkey), token: token.token, timeoutMs: 30_000,
+                method: 'POST', path: VOLUNTARY_EXIT_PATH(pubkey, preflight.signEpoch), token: token.token, timeoutMs: 30_000,
             })
             if (signed.error) { results[pubkey] = { ok: false, error: signed.error }; continue }
             if (signed.httpCode !== 200) { results[pubkey] = { ok: false, error: keymanagerHttpError(signed) }; continue }
 
-            const parsedExit = parseSignedExit(signed.body)
+            const parsedExit = parseSignedExit(signed.body, eligible.index)
             if (!parsedExit.ok) { results[pubkey] = { ok: false, error: parsedExit.error }; continue }
 
             // The beacon node is addressed by URL, not by container name, so the config is built
