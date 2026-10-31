@@ -579,16 +579,42 @@ export function parseFeeRecipient(httpCode, body) {
 }
 
 /**
- * Parse GET graffiti. A 404 means this build has no graffiti route (it landed in Lighthouse
+ * A key without its own graffiti uses the client default, which some clients cannot report and
+ * answer with an error instead (verified on real nodes by upstream stereum): Lodestar 404 "no
+ * graffiti for pubkey", Lighthouse 500 "no graffiti found" (no --graffiti flag), Prysm "could not
+ * find validator index" (before the deposit). These mean "unset", not "unsupported" or "failed".
+ */
+const GRAFFITI_DEFAULT_UNKNOWN = /could not find validator index|no graffiti found|no graffiti for pubkey/i
+
+/**
+ * The text as the user typed it. Lighthouse answers with the 32 on-chain bytes as hex
+ * (`0x4c48...`), Prysm pads the text with zero bytes. A typed graffiti can never look like the
+ * hex form: 0x + 64 hex chars is 66 bytes, over the 32-byte cap.
+ */
+export function cleanGraffiti(value) {
+    if (typeof value !== 'string') return value
+    const text = /^0x[0-9a-fA-F]{64}$/.test(value) ? Buffer.from(value.slice(2), 'hex').toString('utf8') : value
+    return text.replace(/\0+$/, '')
+}
+
+/**
+ * Parse GET graffiti. A bare 404 means this build has no graffiti route (it landed in Lighthouse
  * 4.6 / Teku 23.12 / Nimbus 24.3 / Lodestar 1.12 / Prysm 5.1), which the caller turns into
- * "unsupported" so the UI can hide the action rather than fail it later.
+ * "unsupported" so the UI can hide the action rather than fail it later. A 404 (or any error)
+ * whose message says the key simply has no graffiti is "unset" - otherwise one Lodestar key
+ * without a graffiti would hide graffiti for the whole client.
  */
 export function parseGraffiti(httpCode, body) {
-    if (httpCode === 404) return { unsupported: true }
-    if (httpCode !== 200) return { error: keymanagerHttpError({ httpCode, body }) }
+    if (httpCode !== 200) {
+        let message = ''
+        try { message = String(JSON.parse(body)?.message ?? '') } catch { /* not JSON */ }
+        if (GRAFFITI_DEFAULT_UNKNOWN.test(message)) return { unset: true }
+        if (httpCode === 404) return { unsupported: true }
+        return { error: keymanagerHttpError({ httpCode, body }) }
+    }
     try {
         const graffiti = JSON.parse(body)?.data?.graffiti
-        return typeof graffiti === 'string' ? { value: graffiti } : { unset: true }
+        return typeof graffiti === 'string' ? { value: cleanGraffiti(graffiti) } : { unset: true }
     } catch { return { error: 'Unreadable graffiti response' } }
 }
 

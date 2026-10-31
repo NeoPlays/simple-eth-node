@@ -26,6 +26,7 @@ import {
     isClearSuccess,
     parseFeeRecipient,
     parseGraffiti,
+    cleanGraffiti,
     parseKeymanagerResponse,
     parseKeystoresList,
     parseWeb3SignerPubkeys,
@@ -414,6 +415,24 @@ describe('fee recipient / graffiti helpers', () => {
         expect(parseGraffiti(200, '{"data":{"graffiti":"hi"}}')).toEqual({ value: 'hi' })
         expect(parseGraffiti(404, '')).toEqual({ unsupported: true })
         expect(parseGraffiti(200, 'not json').error).toBeTruthy()
+    })
+
+    it('reads "no graffiti for this key" answers as unset, not as a missing route', () => {
+        // Lodestar: a key without graffiti answers 404 - must not hide graffiti for the client
+        expect(parseGraffiti(404, '{"code":404,"message":"No graffiti for pubkey 0xabc"}')).toEqual({ unset: true })
+        // Lighthouse without --graffiti, Prysm before the deposit
+        expect(parseGraffiti(500, '{"code":500,"message":"No graffiti found"}')).toEqual({ unset: true })
+        expect(parseGraffiti(400, '{"message":"Could not find validator index"}')).toEqual({ unset: true })
+        // a 404 with any other answer is still a missing route
+        expect(parseGraffiti(404, '{"message":"Not Found"}')).toEqual({ unsupported: true })
+        expect(parseGraffiti(500, '{"message":"boom"}').error).toContain('boom')
+    })
+
+    it('decodes Lighthouse hex and strips Prysm zero padding', () => {
+        const hex = '0x' + Buffer.from('Stereum'.padEnd(32, '\0')).toString('hex')
+        expect(parseGraffiti(200, JSON.stringify({ data: { graffiti: hex } }))).toEqual({ value: 'Stereum' })
+        expect(parseGraffiti(200, JSON.stringify({ data: { graffiti: 'hi\u0000\u0000' } }))).toEqual({ value: 'hi' })
+        expect(cleanGraffiti('0xabc')).toBe('0xabc')
     })
 })
 
