@@ -15,7 +15,7 @@
                 <p v-if="!tasks.recent.length" class="empty">No tasks yet. Service and update actions show up here.</p>
 
                 <ul v-else class="task-list">
-                    <li v-for="task in tasks.recent" :key="task.id" class="task">
+                    <li v-for="task in tasks.recent" :key="task.id" class="task" :data-task-id="task.id">
                         <button class="task-head" @click="toggle(task.id)">
                             <span class="status-pill" :class="task.status">{{ statusLabel(task.status) }}</span>
                             <span class="task-label">{{ task.label }}</span>
@@ -85,7 +85,7 @@
 </template>
 
 <script setup>
-import { onMounted, reactive, ref } from 'vue'
+import { nextTick, onMounted, reactive, ref } from 'vue'
 import { useTasksStore } from '@stores/useTasks'
 
 defineEmits(['close'])
@@ -111,7 +111,15 @@ async function copy(key, text) {
     }
 }
 
-onMounted(() => tasks.refreshTasks())
+onMounted(async () => {
+    await tasks.refreshTasks()
+    // Opened from a card's error link: show that task expanded, in view.
+    const id = tasks.focusTaskId
+    if (!id) return
+    expanded.add(id)
+    await nextTick()
+    document.querySelector(`[data-task-id="${CSS.escape(id)}"]`)?.scrollIntoView({ block: 'start' })
+})
 
 function toggle(id) {
     if (expanded.has(id)) expanded.delete(id)

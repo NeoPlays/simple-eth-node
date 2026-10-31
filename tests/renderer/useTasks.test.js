@@ -141,3 +141,27 @@ describe('useTasksStore', () => {
         })
     })
 })
+
+describe('useTasksStore panel', () => {
+    beforeEach(() => {
+        setActivePinia(createPinia())
+        globalThis.window = { api: { invoke: vi.fn(), on: vi.fn(() => () => {}) } }
+    })
+
+    it('opens on a task and clears the focus when closed', () => {
+        const s = useTasksStore()
+        s.openPanel('t1')
+        expect(s.panelOpen).toBe(true)
+        expect(s.focusTaskId).toBe('t1')
+        s.closePanel()
+        expect(s.panelOpen).toBe(false)
+        expect(s.focusTaskId).toBeNull()
+    })
+
+    it('opens without a focus from the header', () => {
+        const s = useTasksStore()
+        s.openPanel()
+        expect(s.panelOpen).toBe(true)
+        expect(s.focusTaskId).toBeNull()
+    })
+})

@@ -69,6 +69,9 @@
                 v-show="activeTab === 'services'"
                 :services="nodeData.services"
                 :pending="pending"
+                :errors="serviceErrors"
+                @show-task="(taskId) => tasks.openPanel(taskId)"
+                @dismiss-error="(id) => delete serviceErrors[id]"
                 @toggle="toggleService"
                 @restart="restartService"
                 @resync="openResync"
@@ -92,6 +95,7 @@ import { useNodesStore } from '@stores/useNodes'
 import { useTasksStore } from '@stores/useTasks'
 import { useNodeMetrics } from '@renderer/composables/useNodeMetrics'
 import NodeMetrics from './NodeMetrics.vue'
+import { taskFailureSummary } from '@utils/taskFailure'
 import ServicesTab from './ServicesTab.vue'
 import UpdatesTab from './UpdatesTab.vue'
 import ValidatorsTab from './ValidatorsTab.vue'
@@ -133,6 +137,9 @@ const nodeData = ref(null)
 const loading = ref(true)
 const error = ref(false)
 const pending = reactive(new Set())
+// Last failed action per service: { action, message, taskId }. Shown on the card until dismissed
+// or until the next action on that service.
+const serviceErrors = reactive({})
 
 const nodeStatus = computed(() => {
     const n = store.nodes.find(n => n.id === route.params.id)
@@ -177,28 +184,34 @@ async function refreshContainerStatuses() {
     }
 }
 
-async function toggleService(service) {
-    const serviceId = service.id
+/**
+ * Run one service action as a task and keep its failure on the card. The task panel has the full
+ * output; the card only needs to say that it failed, why in one line, and link to it.
+ */
+async function runServiceAction(serviceId, action, args, label) {
     pending.add(serviceId)
+    delete serviceErrors[serviceId]
+    let taskId = null
     try {
-        const taskId = await tasks.runNodeTask(route.params.id, isRunning(service) ? 'stop-service' : 'start-service', [serviceId])
-        await tasks.awaitTask(taskId)
-        await refreshContainerStatuses()
+        taskId = await tasks.runNodeTask(route.params.id, action, args)
+        const result = await tasks.awaitTask(taskId)
+        const message = taskFailureSummary(result)
+        if (message) serviceErrors[serviceId] = { action: label, message, taskId }
+    } catch (e) {
+        serviceErrors[serviceId] = { action: label, message: e?.message || 'Could not start the action', taskId }
     } finally {
         pending.delete(serviceId)
     }
+    try { await refreshContainerStatuses() } catch { /* the card keeps its last known state */ }
 }
 
-async function restartService(service) {
-    const serviceId = service.id
-    pending.add(serviceId)
-    try {
-        const taskId = await tasks.runNodeTask(route.params.id, 'restart-service', [serviceId])
-        await tasks.awaitTask(taskId)
-        await refreshContainerStatuses()
-    } finally {
-        pending.delete(serviceId)
-    }
+function toggleService(service) {
+    const stopping = isRunning(service)
+    return runServiceAction(service.id, stopping ? 'stop-service' : 'start-service', [service.id], stopping ? 'Stop' : 'Start')
+}
+
+function restartService(service) {
+    return runServiceAction(service.id, 'restart-service', [service.id], 'Restart')
 }
 
 // Resync opens a confirm modal first (it wipes chain data); confirmResync runs the task.
@@ -210,15 +223,7 @@ async function confirmResync(checkpointUrl) {
     const service = resyncTarget.value
     resyncTarget.value = null
     if (!service) return
-    const serviceId = service.id
-    pending.add(serviceId)
-    try {
-        const taskId = await tasks.runNodeTask(route.params.id, 'resync-service', [serviceId, checkpointUrl ?? null])
-        await tasks.awaitTask(taskId)
-        await refreshContainerStatuses()
-    } finally {
-        pending.delete(serviceId)
-    }
+    await runServiceAction(service.id, 'resync-service', [service.id, checkpointUrl ?? null], 'Resync')
 }
 
 async function disconnect() {

@@ -49,6 +49,17 @@
                             </div>
                         </div>
                         </div>
+                        <div v-if="errors[service.id]" class="service-error" role="alert">
+                            <span class="service-error-text">
+                                <strong>{{ errors[service.id].action }} failed:</strong> {{ errors[service.id].message }}
+                            </span>
+                            <button v-if="errors[service.id].taskId" class="link-btn" @click="emit('show-task', errors[service.id].taskId)">Details</button>
+                            <button class="dismiss-btn" title="Dismiss" aria-label="Dismiss" @click="emit('dismiss-error', service.id)">
+                                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+                                    <path d="M6 6l12 12M18 6L6 18" />
+                                </svg>
+                            </button>
+                        </div>
                         <div class="service-deps" v-if="depsByService[service.id]?.length">
                             <span class="deps-label">connects to</span>
                             <span
@@ -86,8 +97,9 @@ import SetupGroups from './SetupGroups.vue'
 const props = defineProps({
     services: { type: Array, default: () => [] },
     pending: { type: Object, default: () => new Set() }, // reactive Set of in-flight service ids
+    errors: { type: Object, default: () => ({}) },       // serviceId -> { action, message, taskId } of the last failed action
 })
-const emit = defineEmits(['toggle', 'restart', 'resync', 'logs', 'edit'])
+const emit = defineEmits(['toggle', 'restart', 'resync', 'logs', 'edit', 'show-task', 'dismiss-error'])
 
 // The service each id resolves to (for turning a dependency ref into a name + category).
 const serviceById = computed(() => Object.fromEntries(props.services.map((s) => [s.id, s])))
@@ -367,4 +379,40 @@ function isRunning(service) {
     text-align: center;
     padding: var(--space-9);
 }
+/* Inline failure of the last action on this service; the task panel has the full output. */
+.service-error {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-2) var(--space-3);
+    background-color: var(--color-danger-soft);
+    border: 1px solid var(--color-danger-border);
+    border-radius: var(--radius-md);
+    font-size: var(--font-size-secondary);
+    color: var(--ev-c-text-1);
+}
+.service-error-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.service-error-text strong { color: var(--color-danger); font-weight: var(--font-weight-semibold); }
+.link-btn {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--color-accent);
+    font-size: var(--font-size-secondary);
+    cursor: pointer;
+    flex-shrink: 0;
+}
+.link-btn:hover { text-decoration: underline; }
+.dismiss-btn {
+    display: inline-flex;
+    background: none;
+    border: none;
+    padding: var(--space-1);
+    color: var(--ev-c-text-3);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: background-color var(--transition-fast);
+}
+.dismiss-btn:hover { background-color: var(--ev-c-gray-3); color: var(--ev-c-text-1); }
 </style>

@@ -8,6 +8,8 @@ export const useTasksStore = defineStore('tasks', {
     state: () => ({
         tasks: [], // newest first, full DTOs { id, label, nodeId, status, createdAt, startedAt, endedAt, subTaskCount, subTasks, output, error }
         _subscribed: false,
+        panelOpen: false,
+        focusTaskId: null, // task to expand and scroll to when the panel opens (from a card's error link)
     }),
     getters: {
         runningCount: (state) => state.tasks.filter((t) => t.status === 'running').length,
@@ -42,6 +44,15 @@ export const useTasksStore = defineStore('tasks', {
         runNodeTask(nodeId, action, args = []) {
             this._subscribe()
             return window.api.invoke('run-node-task', nodeId, action, args).then((r) => r?.taskId)
+        },
+        // Open the task panel, optionally on one task (expanded and scrolled to).
+        openPanel(taskId = null) {
+            this.focusTaskId = taskId
+            this.panelOpen = true
+        },
+        closePanel() {
+            this.panelOpen = false
+            this.focusTaskId = null
         },
         // Resolve when the given task reaches a terminal status, with the final DTO.
         awaitTask(taskId) {

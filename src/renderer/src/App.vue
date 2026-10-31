@@ -3,7 +3,7 @@
         <header class="app-header">
             <span class="brand">Stereum Lite</span>
             <div class="header-actions">
-                <button class="header-action" @click="tasksOpen = true" title="Tasks">
+                <button class="header-action" @click="tasks.openPanel()" title="Tasks">
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                         <path d="M9 11l3 3L22 4"/>
                         <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/>
@@ -23,7 +23,7 @@
             <RouterView />
         </div>
 
-        <TaskPanel v-if="tasksOpen" @close="tasksOpen = false" />
+        <TaskPanel v-if="tasks.panelOpen" @close="tasks.closePanel()" />
         <SettingsPanel v-if="settingsOpen" @close="settingsOpen = false" />
     </main>
 </template>
@@ -38,7 +38,6 @@ import TaskPanel from '@components/TaskPanel.vue'
 const theme = useThemeStore()
 const tasks = useTasksStore()
 const settingsOpen = ref(false)
-const tasksOpen = ref(false)
 // Hydrate + subscribe up front so the running-count badge is live before the panel opens.
 onMounted(() => {
     theme.init()
