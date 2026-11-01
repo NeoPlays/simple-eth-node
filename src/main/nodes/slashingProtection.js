@@ -179,3 +179,79 @@ export function interchangeSummary(text) {
         genesisValidatorsRoot: typeof root === 'string' ? root : null,
     }
 }
+
+/**
+ * genesis_validators_root of the networks stereum runs, for checking a protection file when no
+ * beacon node answers (taken from upstream stereum's keystores.js). A file is still never
+ * checked against nothing: with neither a live root nor a known one, the import is refused.
+ */
+export const KNOWN_GENESIS_ROOTS = {
+    mainnet: '0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95',
+    sepolia: '0xd8ea171f3c94aea21ebc42a1ed61052acf3f9209c00e4efbaaddac09ed9b8078',
+    hoodi: '0x212f13fc4df078b6cb7db228f1c8307566dcecf900867401a92023d7ba99cb5f',
+    gnosis: '0xf5dcb5564e829aab27264b9becd5dfaa017085611224cb3036f573368dbb9d47',
+}
+
+/**
+ * The interchange reduced to EIP-3076's minimal form for the given keys: per key only the highest
+ * signed block slot and the highest attestation source and target epoch, which every client takes
+ * as lower bounds. A full export holds every signed message (megabytes per key after months) and
+ * would not fit one import request; the minimal form is ~200 bytes per key.
+ *
+ * Values go through BigInt from their STRING form, never Number, so no uint64 loses precision.
+ * Callers must have run validateInterchange first (which refuses numeric values).
+ * @param {string} text - the interchange JSON
+ * @param {string[]|null} pubkeys - keys to keep, null for all
+ * @returns {string} the minimal interchange as JSON text
+ */
+export function minimalInterchange(text, pubkeys = null) {
+    const json = JSON.parse(text)
+    const wanted = pubkeys ? new Set(pubkeys.map(normalizeKey)) : null
+    const byKey = new Map()
+    const higher = (a, b) => (a === null || b > a ? b : a)
+    for (const entry of asArray(json?.data)) {
+        const key = normalizeKey(entry?.pubkey)
+        if (wanted && !wanted.has(key)) continue
+        if (!byKey.has(key)) byKey.set(key, { pubkey: entry.pubkey, slot: null, source: null, target: null })
+        const acc = byKey.get(key)
+        for (const b of asArray(entry?.signed_blocks)) acc.slot = higher(acc.slot, BigInt(String(b.slot)))
+        for (const a of asArray(entry?.signed_attestations)) {
+            acc.source = higher(acc.source, BigInt(String(a.source_epoch)))
+            acc.target = higher(acc.target, BigInt(String(a.target_epoch)))
+        }
+    }
+    const data = [...byKey.values()].map((acc) => ({
+        pubkey: acc.pubkey,
+        signed_blocks: acc.slot !== null ? [{ slot: String(acc.slot) }] : [],
+        signed_attestations: acc.target !== null
+            ? [{ source_epoch: String(acc.source), target_epoch: String(acc.target) }]
+            : [],
+    }))
+    return JSON.stringify({ metadata: json.metadata, data })
+}
+
+/**
+ * Join the interchange blobs of several delete requests into one file. A single blob is returned
+ * exactly as the client produced it. Several are joined by concatenating data[] (full history
+ * kept: it is saved to a local file, not sent anywhere), which requires them to be from the
+ * same chain.
+ * @param {string[]} blobs
+ * @returns {{ interchange: string|null }|{ error: string }}
+ */
+export function mergeInterchanges(blobs = []) {
+    const list = blobs.filter((b) => typeof b === 'string' && b.trim() !== '')
+    if (!list.length) return { interchange: null }
+    if (list.length === 1) return { interchange: list[0] }
+    let metadata = null
+    const data = []
+    for (const blob of list) {
+        let json
+        try { json = JSON.parse(blob) } catch { return { error: 'A client returned unreadable slashing protection data' } }
+        if (!metadata) metadata = json.metadata
+        else if (normalizeKey(json.metadata?.genesis_validators_root) !== normalizeKey(metadata?.genesis_validators_root)) {
+            return { error: 'The client returned slashing protection data from two different chains' }
+        }
+        data.push(...asArray(json.data))
+    }
+    return { interchange: JSON.stringify({ metadata, data }) }
+}

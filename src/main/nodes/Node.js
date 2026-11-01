@@ -36,7 +36,8 @@ import {
     buildChainContextScript, parseChainContext, buildDutiesScript, parseDuties,
     dutiesByIndex, dutiesMeta,
 } from "@main/nodes/validatorDuties";
-import { validateInterchange } from "@main/nodes/slashingProtection";
+import { validateInterchange, minimalInterchange, mergeInterchanges, KNOWN_GENESIS_ROOTS } from "@main/nodes/slashingProtection";
+import { DELETE_CHUNK, chunked, importChunks, isPrysmWalletMissing, prysmWalletCommands } from "@main/nodes/importChecks";
 import { buildDepositQueueScript, parseDepositQueue, depositQueuedState } from "@main/nodes/depositQueue";
 import { checkEpochs, buildOnchainCheckScript, parseOnchainCheck, onchainVerdicts, summarizeVerdicts } from "@main/nodes/onchainCheck";
 import {
@@ -55,8 +56,12 @@ import {
     isServiceId, configPath, checkServiceConfig, buildBackupCommand, buildBackupReadCommand, parseBackupRead,
 } from "@main/nodes/serviceConfig";
 import YAML from 'yaml';
-import { randomUUID } from "crypto";
+import { randomUUID, randomBytes } from "crypto";
 import log from 'electron-log';
+
+// Prysm comes back from a restart after a wallet is created; poll its keymanager this long.
+const PRYSM_READY_TIMEOUT_MS = 90_000
+const PRYSM_READY_POLL_MS = 5_000
 
 // Interval for re-reading a running playbook's log to stream live sub-tasks (task context only).
 const PLAYBOOK_POLL_MS = 2000;
@@ -67,6 +72,13 @@ const NO_BEACON_ERROR = 'No beacon available: this node has no running consensus
 /**
  * Represents a remote node managed via SSH
  */
+
+/** What a protection-file check against `root` could not vouch for (see Node._genesisRoot). */
+export function rootWarnings(root, known) {
+    if (!root) return ['No beacon node answered and the network has no known genesis root, so the slashing protection file could not be confirmed to belong to this chain.']
+    if (known) return [`No beacon node answered, so the slashing protection file was checked against the known genesis root of ${known}.`]
+    return []
+}
 
 /** Import time limit: a minute of headroom plus 15s per keystore, at most 30 minutes. */
 export function importTimeoutMs(count) {
@@ -430,6 +442,8 @@ export class Node {
         // Validator client: GET /eth/v1/keystores, authenticated with the client's bearer token.
         const r = await this._keymanagerRequest(serviceId, config, { method: 'GET', path: '/eth/v1/keystores' })
         if (r.error) return { ok: false, error: r.error, keys: [] }
+        // Prysm answers 503 until a wallet exists; the first import creates one.
+        if (config.service === 'PrysmValidatorService' && isPrysmWalletMissing(r.body)) return { ok: true, keys: [], walletMissing: true }
         if (r.httpCode !== 200) return { ok: false, error: keymanagerHttpError(r), httpCode: r.httpCode, keys: [] }
         return { ok: true, keys: parseKeystoresList(r.body) }
     }
@@ -751,27 +765,47 @@ export class Node {
         if (!pubkeys.length) return { ok: false, error: 'No keys selected' }
 
         await this._prepareKeystoreWrite(c.config)
-        // Stopping many keys and serialising their history is slower than a settings write.
-        const r = await this._keymanagerRequest(serviceId, c.config, {
-            method: 'DELETE', path: KEYSTORES_PATH, body: { pubkeys }, timeoutMs: 120_000,
-        })
-        if (r.error) return { ok: false, error: r.error }
-        if (r.httpCode !== 200) return { ok: false, error: keymanagerHttpError(r), httpCode: r.httpCode }
+        const token = await this._keymanagerToken(serviceId, c.config)
+        if (token.error) return { ok: false, error: token.error }
 
-        const parsed = parseDeleteKeystoresResponse(r.body, pubkeys)
-        if (parsed.error) return { ok: false, error: parsed.error }
+        // DELETE_CHUNK keys per request: large deletes ran clients out of memory (upstream stereum),
+        // and every answer carries the full signing history of its keys. Stopping keys and
+        // serialising their history is slower than a settings write. A failure after the first
+        // chunk marks only that chunk's keys as errors - `error` already means "may still be signing".
+        const results = []
+        const blobs = []
+        for (const [n, chunk] of chunked(pubkeys, DELETE_CHUNK).entries()) {
+            const r = await this._keymanagerRequest(serviceId, c.config, {
+                method: 'DELETE', path: KEYSTORES_PATH, body: { pubkeys: chunk }, token: token.token, timeoutMs: 120_000,
+            })
+            let error = r.error || (r.httpCode !== 200 ? keymanagerHttpError(r) : null)
+            const parsed = error ? null : parseDeleteKeystoresResponse(r.body, chunk)
+            if (parsed?.error) error = parsed.error
+            if (error) {
+                if (n === 0) return { ok: false, error, ...(r.httpCode ? { httpCode: r.httpCode } : {}) }
+                results.push(...chunk.map((pubkey) => ({ pubkey, status: 'error', message: error })))
+                continue
+            }
+            results.push(...parsed.results)
+            if (parsed.slashingProtection) blobs.push(parsed.slashingProtection)
+        }
+
+        // One chunk's record is returned exactly as the client produced it; several are joined.
+        const merged = mergeInterchanges(blobs)
+        if (merged.error) return { ok: false, error: merged.error, results }
+        const slashingProtection = merged.interchange
 
         return {
             ok: true,
-            results: parsed.results,
-            slashingProtection: parsed.slashingProtection,
+            results,
+            slashingProtection,
             // Surfaced so the UI can warn rather than imply the file is a full backup: keys the
             // client never had contribute no history, and a key it could not stop is a hard stop.
-            failed: deleteErrors(parsed.results).map((x) => x.pubkey),
-            notFound: deleteNotFound(parsed.results).map((x) => x.pubkey),
+            failed: deleteErrors(results).map((x) => x.pubkey),
+            notFound: deleteNotFound(results).map((x) => x.pubkey),
             complete: protectionCoversAll(
-                parsed.slashingProtection,
-                parsed.results.filter((x) => DELETE_OK_STATUSES.includes(x.status)).map((x) => x.pubkey),
+                slashingProtection,
+                results.filter((x) => DELETE_OK_STATUSES.includes(x.status)).map((x) => x.pubkey),
             ),
         }
     }
@@ -879,18 +913,67 @@ export class Node {
      * inability to check at all returns ok:false, because the caller distinguishes "this file is
      * bad" from "I could not tell", and must not treat the second as the first.
      */
-    async validateSlashingProtection(content, pubkeys = []) {
-        const ctx = await this.getBeaconContext()
-        const root = ctx.ok ? ctx.genesisValidatorsRoot : null
+    async validateSlashingProtection(content, pubkeys = [], serviceId = null) {
+        const { root, known } = await this._genesisRoot(serviceId)
         const check = validateInterchange(content, { pubkeys, genesisValidatorsRoot: root })
-        const warnings = [...check.warnings]
-        if (!root) {
-            // Without the node's own root the wrong-chain check silently does not happen, which is
-            // the one failure this file is meant to catch. Say so rather than implying it passed.
-            warnings.push('This node\'s genesis validators root could not be read, so the file could not be confirmed to belong to this chain.')
-        }
+        const warnings = [...check.warnings, ...rootWarnings(root, known)]
         return { ok: true, errors: check.errors, warnings, missing: check.missing, covered: check.covered, chainVerified: Boolean(root) }
     }
+
+    /**
+     * The chain's genesis validators root: the beacon's live answer, else the known root of the
+     * validator client's network (KNOWN_GENESIS_ROOTS), so a file is still checked against the
+     * chain when no beacon answers. `known` names the network when the fallback was used.
+     * @returns {Promise<{ root: string|null, known: string|null }>}
+     */
+    async _genesisRoot(serviceId = null) {
+        const ctx = await this.getBeaconContext()
+        if (ctx.ok && ctx.genesisValidatorsRoot) return { root: ctx.genesisValidatorsRoot, known: null }
+        if (!serviceId) return { root: null, known: null }
+        let network = null
+        try { network = YAML.parse(await this.fetchRawServiceConfig(serviceId))?.network ?? null } catch { /* unknown */ }
+        const root = network ? KNOWN_GENESIS_ROOTS[network] ?? null : null
+        return { root, known: root ? network : null }
+    }
+
+    /**
+     * Create Prysm's wallet if it has none: Prysm cannot import (503 "wallet not initialized")
+     * until one exists. Generates a wallet password (over stdin), runs `validator wallet create` in
+     * the container, restarts the client, and waits for its keymanager to answer. A wallet whose
+     * password file is gone is refused: a new password would lock it.
+     * @returns {Promise<{ ok: true, created: boolean }|{ ok: false, error: string }>}
+     */
+    async _ensurePrysmWallet(serviceId, config) {
+        // Best effort, like _prepareKeystoreWrite: when the folders or the wallet state cannot be
+        // told, step aside and let the import run, so Prysm's own error reaches the user.
+        const cmds = prysmWalletCommands(serviceId, config)
+        if (!cmds) return { ok: true, created: false }
+        const state = String((await this.sshService.exec(cmds.check)).stdout ?? '')
+        if (state.includes('WALLET_ORPHAN')) {
+            return { ok: false, error: 'Prysm has a wallet but its password file is missing. Restore wallet-password before importing; a new password would lock the wallet.' }
+        }
+        if (!state.includes('WALLET_MISSING')) return { ok: true, created: false }
+
+        const failed = (res) => res.rc !== 0 && res.rc !== null
+        if (failed(await this.sshService.exec(cmds.writePassword, true, { input: randomBytes(24).toString('hex') + '\n' }))) {
+            return { ok: false, error: 'Could not write Prysm\'s wallet password' }
+        }
+        await this.sshService.exec(cmds.securePassword)
+        const created = await this.sshService.exec(cmds.create, true, { timeoutMs: 60_000 })
+        if (failed(created)) return { ok: false, error: `Creating Prysm's wallet failed${created.stderr ? `: ${String(created.stderr).trim()}` : ''}` }
+        await this.sshService.exec(cmds.ownWallet)
+        await this.restartService(serviceId)
+
+        // The restart regenerates the token; poll until the keymanager answers with the new one.
+        for (let waited = 0; waited <= PRYSM_READY_TIMEOUT_MS; waited += PRYSM_READY_POLL_MS) {
+            const r = await this._keymanagerRequest(serviceId, config, { method: 'GET', path: KEYSTORES_PATH })
+            if (r.httpCode === 200) return { ok: true, created: true }
+            await this._sleep(PRYSM_READY_POLL_MS)
+        }
+        return { ok: false, error: 'Prysm\'s wallet was created, but its keymanager did not come back within 90 seconds. Try the import again.' }
+    }
+
+    _sleep(ms) { return new Promise((resolve) => setTimeout(resolve, ms)) }
 
     /**
      * Import keystores into a validator client.
@@ -916,18 +999,16 @@ export class Node {
             try { return String(JSON.parse(k)?.pubkey ?? '') } catch { return '' }
         }).map((p) => (p && !p.startsWith('0x') ? `0x${p}` : p))
 
-        if (slashingProtection) {
-            const ctx = await this.getBeaconContext()
-            const check = validateInterchange(slashingProtection, {
-                pubkeys,
-                genesisValidatorsRoot: ctx.ok ? ctx.genesisValidatorsRoot : null,
-            })
-            if (!check.ok) return { ok: false, error: check.errors.join(' '), validation: check }
-        }
         // What the import could not vouch for travels back with the result: warned about, not
         // confirmed away. Only certain danger refuses (a key signing on chain, a protection file
         // that does not fit these keys); missing information is the operator's call.
         const warnings = []
+        if (slashingProtection) {
+            const { root, known } = await this._genesisRoot(serviceId)
+            const check = validateInterchange(slashingProtection, { pubkeys, genesisValidatorsRoot: root })
+            if (!check.ok) return { ok: false, error: check.errors.join(' '), validation: check }
+            warnings.push(...rootWarnings(root, known))
+        }
         if (!slashingProtection) {
             warnings.push('Imported without a slashing protection file: the client has no signing history for these keys, which is only safe if they have never signed.')
         }
@@ -943,30 +1024,59 @@ export class Node {
         if (!onchain.ok) warnings.push(`Recent on-chain activity could not be checked (${onchain.error}).`)
         else if (onchain.counts.unknown > 0) warnings.push(`Recent on-chain activity could not be fully checked for ${onchain.counts.unknown} ${onchain.counts.unknown === 1 ? 'key' : 'keys'}.`)
 
-        await this._prepareKeystoreWrite(c.config)
-        // The client answers only after decrypting every keystore - scrypt/pbkdf2, deliberately slow,
-        // and Prysm does them one by one - so the limit grows with the batch instead of a flat 20s.
-        const r = await this._keymanagerRequest(serviceId, c.config, {
-            method: 'POST',
-            path: KEYSTORES_PATH,
-            body: buildImportBody(keystores, passwords, slashingProtection),
-            timeoutMs: importTimeoutMs(keystores.length),
-        })
-        if (r.error) return { ok: false, error: r.error }
-        if (r.curlError?.timedOut) {
-            // A timeout is not a failure the client saw: the import may still finish over there.
-            // Re-importing is safe either way - keys already present come back as `duplicate`.
-            return {
-                ok: false,
-                timedOut: true,
-                error: `The client did not answer within ${r.timeoutS}s. It decrypts every keystore before replying, so the import may still be running: refresh the key list in a minute before trying again (keys that did get imported are reported as duplicate, never imported twice).`,
-            }
+        if (c.config.service === 'PrysmValidatorService') {
+            const wallet = await this._ensurePrysmWallet(serviceId, c.config)
+            if (!wallet.ok) return { ok: false, error: wallet.error }
         }
-        if (r.httpCode !== 200) return { ok: false, error: keymanagerHttpError(r), httpCode: r.httpCode }
 
-        const parsed = parseImportKeystoresResponse(r.body, pubkeys)
-        if (parsed.error) return { ok: false, error: parsed.error }
-        return { ok: true, results: parsed.results, warnings }
+        await this._prepareKeystoreWrite(c.config)
+        const token = await this._keymanagerToken(serviceId, c.config)
+        if (token.error) return { ok: false, error: token.error }
+
+        // Chunked by count and bytes (importChunks): the client decrypts every keystore before it
+        // answers, and one request must stay well under curl's config limit. Each chunk carries only
+        // its own keys' protection in EIP-3076 minimal form, since a full multi-year history would
+        // not fit. Reduced up front, so an unreadable value fails before any key is sent.
+        const chunks = importChunks(keystores.map((k, i) => String(k).length + String(passwords[i] ?? '').length + (slashingProtection ? 300 : 0)))
+        let protections
+        try {
+            protections = chunks.map(([start, end]) => (slashingProtection ? minimalInterchange(slashingProtection, pubkeys.slice(start, end)) : null))
+        } catch (err) {
+            return { ok: false, error: `The slashing protection file has an unreadable value: ${err?.message ?? err}` }
+        }
+
+        const results = []
+        for (const [n, [start, end]] of chunks.entries()) {
+            const keys = pubkeys.slice(start, end)
+            // The limit grows with the chunk instead of a flat 20s (Prysm decrypts one by one).
+            const r = await this._keymanagerRequest(serviceId, c.config, {
+                method: 'POST',
+                path: KEYSTORES_PATH,
+                body: buildImportBody(keystores.slice(start, end), passwords.slice(start, end), protections[n]),
+                token: token.token,
+                timeoutMs: importTimeoutMs(keys.length),
+            })
+            if (r.curlError?.timedOut) {
+                // A timeout is not a failure the client saw: the import may still finish over there.
+                // Re-importing is safe either way - keys already present come back as `duplicate`.
+                const error = `The client did not answer within ${r.timeoutS}s. It decrypts every keystore before replying, so the import may still be running: refresh the key list in a minute before trying again (keys that did get imported are reported as duplicate, never imported twice).`
+                if (n === 0) return { ok: false, timedOut: true, error }
+                // Later chunks are not sent while the client is still busy with this one.
+                results.push(...pubkeys.slice(start).map((pubkey) => ({ pubkey, status: 'error', message: 'Not imported: the client was still busy with an earlier batch' })))
+                warnings.push(error)
+                break
+            }
+            let error = r.error || (r.httpCode !== 200 ? keymanagerHttpError(r) : null)
+            const parsed = error ? null : parseImportKeystoresResponse(r.body, keys)
+            if (parsed?.error) error = parsed.error
+            if (error) {
+                if (n === 0) return { ok: false, error, ...(r.httpCode ? { httpCode: r.httpCode } : {}) }
+                results.push(...keys.map((pubkey) => ({ pubkey, status: 'error', message: error })))
+                continue
+            }
+            results.push(...parsed.results)
+        }
+        return { ok: true, results, warnings }
     }
 
     /**

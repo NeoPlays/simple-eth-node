@@ -815,7 +815,7 @@ async function validateProtection({ protection, pubkeys, done }) {
     // Validation runs in the main process because only it knows the node's genesis validators
     // root, which is what proves the file belongs to this chain.
     try {
-        done(await window.api.invoke('validate-slashing-protection', props.nodeId, protection, pubkeys))
+        done(await window.api.invoke('validate-slashing-protection', props.nodeId, protection, pubkeys, activeService.value?.id))
     } catch (e) {
         done({ ok: false, error: e?.message || 'Could not validate the file' })
     }

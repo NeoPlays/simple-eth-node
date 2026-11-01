@@ -1532,6 +1532,183 @@ describe('Node', () => {
         })
     })
 
+    describe('chunked removal and import', () => {
+        const VC_YAML = 'service: LighthouseValidatorService\nnetwork: mainnet\ncommand:\n  - --http\n'
+        const key = (i) => '0x' + i.toString(16).padStart(96, '0')
+        const keystore = (pubkey) => JSON.stringify({ pubkey: pubkey.replace(/^0x/, ''), crypto: {} })
+        const ROOT = '0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95'
+        const CTX = `{"data":{"genesis_validators_root":"${ROOT}"}}\n===BCTX===\n{"data":{"head_slot":"32000"}}`
+        // The 0x pubkeys a keymanager request carried (keystores carry bare hex).
+        const keysIn = (input) => [...input.matchAll(/0x[0-9a-f]{96}/g)].map((m) => m[0])
+
+        function wire({ answer, ctx = CTX } = {}) {
+            const requests = []
+            node.sshService.exec = vi.fn(async (cmd, sudo, opts) => {
+                if (cmd.includes('cat /etc/stereum/services/')) return ok(VC_YAML)
+                if (cmd.startsWith('docker exec')) return ok('TOKEN')
+                if (cmd.includes('beacon/genesis')) return ok(ctx)
+                if (opts?.input?.includes('/eth/v1/keystores')) {
+                    requests.push(opts.input)
+                    return ok(answer(opts.input, requests.length))
+                }
+                return ok('')
+            })
+            vi.spyOn(node, '_resolveBeaconBase').mockResolvedValue({ base: 'http://beacon:5052', source: 'node' })
+            // Solo client, nothing signing elsewhere: those gates are tested on their own.
+            vi.spyOn(node, '_dvtBehind').mockResolvedValue(null)
+            vi.spyOn(node, 'checkKeysOnChain').mockResolvedValue({ ok: true, results: {}, counts: { unknown: 0 } })
+            return requests
+        }
+        const protection = (keys) => JSON.stringify({
+            metadata: { interchange_format_version: '5', genesis_validators_root: ROOT },
+            data: keys.map((pubkey) => ({ pubkey, signed_blocks: [{ slot: '5' }, { slot: '9' }], signed_attestations: [] })),
+        })
+        const deleted = (input) => {
+            const sent = keysIn(input)
+            return JSON.stringify({ data: sent.map(() => ({ status: 'deleted' })), slashing_protection: protection(sent) }) + '\n200'
+        }
+
+        it('deletes in chunks of 20 and joins their protection records', async () => {
+            const keys = Array.from({ length: 25 }, (_, i) => key(i + 1))
+            const requests = wire({ answer: deleted })
+            const r = await node.deleteValidatorKeys('svc', keys)
+            expect(requests.map((i) => keysIn(i).length)).toEqual([20, 5])
+            expect(r.ok).toBe(true)
+            expect(r.results).toHaveLength(25)
+            expect(JSON.parse(r.slashingProtection).data).toHaveLength(25)
+            expect(r.complete).toBe(true)
+        })
+
+        it('returns a single chunk record exactly as the client produced it', async () => {
+            const keys = [key(1)]
+            wire({ answer: deleted })
+            const r = await node.deleteValidatorKeys('svc', keys)
+            expect(r.slashingProtection).toBe(protection(keys))
+        })
+
+        it('marks a later failed chunk as errors instead of dropping it', async () => {
+            const keys = Array.from({ length: 25 }, (_, i) => key(i + 1))
+            wire({ answer: (input, n) => (n === 2 ? '{"message":"out of memory"}\n500' : deleted(input)) })
+            const r = await node.deleteValidatorKeys('svc', keys)
+            expect(r.ok).toBe(true)
+            expect(r.failed).toHaveLength(5)
+            expect(r.results[24].message).toContain('out of memory')
+        })
+
+        it("imports in chunks with only each chunk's keys in minimal protection", async () => {
+            const keys = Array.from({ length: 60 }, (_, i) => key(i + 1))
+            const requests = wire({
+                answer: (input) => JSON.stringify({ data: [...new Set(keysIn(input))].map(() => ({ status: 'imported' })) }) + '\n200',
+            })
+            const r = await node.importValidatorKeys('svc', keys.map(keystore), keys.map(() => 'pw'), protection(keys))
+            expect(r.ok).toBe(true)
+            expect(r.results).toHaveLength(60)
+            expect(requests).toHaveLength(2)
+            expect(keysIn(requests[1])).toEqual(keys.slice(50))
+            // minimal form: only the highest slot survives (the config escapes the nested JSON)
+            expect(requests[0]).toMatch(/slot[\\"]+:[\\"]+9[\\"]/)
+            expect(requests[0]).not.toMatch(/slot[\\"]+:[\\"]+5[\\"]/)
+        })
+
+        it('checks against the known root when no beacon answers, and warns when there is none', async () => {
+            const keys = [key(1)]
+            const requests = wire({ ctx: 'nothing', answer: () => '{"data":[{"status":"imported"}]}\n200' })
+            const r = await node.importValidatorKeys('svc', keys.map(keystore), ['pw'], protection(keys))
+            expect(r.ok).toBe(true)
+            expect(requests).toHaveLength(1)
+            expect(r.warnings.join(' ')).toMatch(/known genesis root of mainnet/)
+
+            // Wrong chain is still caught through the known root.
+            const other = protection(keys).replace(ROOT, '0x' + 'd'.repeat(64))
+            expect((await node.importValidatorKeys('svc', keys.map(keystore), ['pw'], other)).error).toMatch(/Wrong chain/)
+
+            node.sshService.exec = vi.fn(async (cmd, sudo, opts) => {
+                if (cmd.includes('cat /etc/stereum/services/')) return ok('service: LighthouseValidatorService\nnetwork: devnet\ncommand:\n  - --http\n')
+                if (cmd.startsWith('docker exec')) return ok('TOKEN')
+                if (opts?.input?.includes('/eth/v1/keystores')) return ok('{"data":[{"status":"imported"}]}\n200')
+                return ok('nothing')
+            })
+            const unchecked = await node.importValidatorKeys('svc', keys.map(keystore), ['pw'], protection(keys))
+            expect(unchecked.ok).toBe(true)
+            expect(unchecked.warnings.join(' ')).toMatch(/no known genesis root/)
+        })
+    })
+
+    describe('Prysm wallet bootstrap', () => {
+        const PRYSM_YAML = [
+            'service: PrysmValidatorService',
+            'network: hoodi',
+            'command:',
+            '  - --http-host=0.0.0.0',
+            '  - --http-port=7500',
+            'volumes:',
+            '  - /opt/stereum/p/data/wallets:/opt/app/data/wallets',
+            '  - /opt/stereum/p/data/passwords:/opt/app/data/passwords',
+        ].join('\n') + '\n'
+        const keystore = JSON.stringify({ pubkey: 'a'.repeat(96), crypto: {} })
+
+        function wire(walletState) {
+            const calls = []
+            let listed = 0
+            node.sshService.exec = vi.fn(async (cmd, sudo, opts) => {
+                calls.push({ cmd, input: opts?.input })
+                if (cmd.includes('cat /etc/stereum/services/')) return ok(PRYSM_YAML)
+                if (cmd.includes('WALLET_READY')) return ok(walletState)
+                if (cmd.includes('auth-token')) return ok('header\nTOKEN')
+                if (opts?.input?.includes('request = "GET"')) return ok(++listed > 1 ? '{"data":[]}\n200' : '\n000')
+                if (opts?.input?.includes('/eth/v1/keystores')) return ok('{"data":[{"status":"imported"}]}\n200')
+                return ok('')
+            })
+            node.restartService = vi.fn(async () => ({}))
+            node._sleep = vi.fn(async () => {})
+            vi.spyOn(node, '_resolveBeaconBase').mockResolvedValue({ base: 'http://beacon:5052', source: 'node' })
+            vi.spyOn(node, '_dvtBehind').mockResolvedValue(null)
+            vi.spyOn(node, 'checkKeysOnChain').mockResolvedValue({ ok: true, results: {}, counts: { unknown: 0 } })
+            return calls
+        }
+        const run = () => node.importValidatorKeys('svc', [keystore], ['pw'], null)
+
+        it('creates the wallet, restarts Prysm and waits for its keymanager before importing', async () => {
+            const calls = wire('WALLET_MISSING')
+            const r = await run()
+            expect(r.ok).toBe(true)
+            const password = calls.find((c) => c.cmd.startsWith('tee '))
+            expect(password.cmd).not.toMatch(/[0-9a-f]{48}/)
+            expect(password.input).toMatch(/^[0-9a-f]{48}\n$/)
+            expect(calls.some((c) => c.cmd.includes('wallet create') && c.cmd.includes('--hoodi'))).toBe(true)
+            expect(node.restartService).toHaveBeenCalledWith('svc')
+            expect(node._sleep).toHaveBeenCalledTimes(1)
+            const createdAt = calls.findIndex((c) => c.cmd.includes('wallet create'))
+            const importedAt = calls.findIndex((c) => c.input?.includes('request = "POST"'))
+            expect(importedAt).toBeGreaterThan(createdAt)
+        })
+
+        it('leaves an existing wallet alone', async () => {
+            const calls = wire('WALLET_READY')
+            expect((await run()).ok).toBe(true)
+            expect(calls.some((c) => c.cmd.includes('wallet create'))).toBe(false)
+            expect(node.restartService).not.toHaveBeenCalled()
+        })
+
+        it('refuses a wallet whose password file is gone rather than overwrite it', async () => {
+            const calls = wire('WALLET_ORPHAN')
+            const r = await run()
+            expect(r.ok).toBe(false)
+            expect(r.error).toMatch(/password file is missing/)
+            expect(calls.some((c) => c.cmd.startsWith('tee '))).toBe(false)
+        })
+
+        it('lists no keys instead of an error while Prysm has no wallet', async () => {
+            node.sshService.exec = vi.fn(async (cmd) => {
+                if (cmd.includes('cat /etc/stereum/services/')) return ok(PRYSM_YAML)
+                if (cmd.includes('auth-token')) return ok('TOKEN')
+                return ok('{"message":"Prysm Wallet not initialized. Please create a new wallet."}\n503')
+            })
+            const r = await node.listValidators('svc')
+            expect(r).toEqual({ ok: true, keys: [], walletMissing: true })
+        })
+    })
+
     describe('importValidatorKeys', () => {
         // A solo client with keys that are not signing anywhere: the DVT gate and the on-chain
         // activity check (both tested on their own) pass.

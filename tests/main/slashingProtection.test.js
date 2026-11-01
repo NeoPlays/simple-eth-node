@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import {
     INTERCHANGE_FORMAT_VERSION, parseInterchange, validateInterchange, interchangeSummary,
-    hasStringNumerics,
+    hasStringNumerics, minimalInterchange, mergeInterchanges, KNOWN_GENESIS_ROOTS,
 } from '@main/nodes/slashingProtection'
 
 const GVR = '0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95'
@@ -336,5 +336,63 @@ describe('interchangeSummary', () => {
         for (const input of [undefined, null, '', 'not json', '[]', 42]) {
             expect(interchangeSummary(input)).toBeNull()
         }
+    })
+})
+
+describe('minimalInterchange', () => {
+    const A = '0x' + 'a'.repeat(96)
+    const B = '0x' + 'b'.repeat(96)
+    const full = JSON.stringify({
+        metadata: { interchange_format_version: '5', genesis_validators_root: '0xroot' },
+        data: [
+            { pubkey: A, signed_blocks: [{ slot: '10' }, { slot: '99999999999999999999' }], signed_attestations: [
+                { source_epoch: '5', target_epoch: '6' }, { source_epoch: '7', target_epoch: '8' },
+            ] },
+            { pubkey: B, signed_blocks: [], signed_attestations: [] },
+        ],
+    })
+
+    it('keeps only the highest values per key, exactly, as strings', () => {
+        const min = JSON.parse(minimalInterchange(full))
+        expect(min.metadata.genesis_validators_root).toBe('0xroot')
+        expect(min.data[0].signed_blocks).toEqual([{ slot: '99999999999999999999' }])
+        expect(min.data[0].signed_attestations).toEqual([{ source_epoch: '7', target_epoch: '8' }])
+        expect(min.data[1]).toEqual({ pubkey: B, signed_blocks: [], signed_attestations: [] })
+    })
+
+    it('filters to the given keys, case-insensitively', () => {
+        const min = JSON.parse(minimalInterchange(full, [B.toUpperCase().replace('0X', '0x')]))
+        expect(min.data.map((d) => d.pubkey)).toEqual([B])
+    })
+
+    it('throws on a value that is not a number', () => {
+        const bad = JSON.stringify({ metadata: {}, data: [{ pubkey: A, signed_blocks: [{ slot: 'abc' }] }] })
+        expect(() => minimalInterchange(bad)).toThrow()
+    })
+})
+
+describe('mergeInterchanges', () => {
+    const blob = (root, pubkey) => JSON.stringify({ metadata: { interchange_format_version: '5', genesis_validators_root: root }, data: [{ pubkey }] })
+
+    it('returns a single blob untouched', () => {
+        const one = '{ "metadata": {}, "data": [] }'
+        expect(mergeInterchanges([one]).interchange).toBe(one)
+        expect(mergeInterchanges([]).interchange).toBeNull()
+    })
+
+    it('concatenates data from the same chain', () => {
+        const merged = JSON.parse(mergeInterchanges([blob('0xr', 'a'), blob('0xr', 'b')]).interchange)
+        expect(merged.data.map((d) => d.pubkey)).toEqual(['a', 'b'])
+        expect(merged.metadata.genesis_validators_root).toBe('0xr')
+    })
+
+    it('refuses blobs from two chains', () => {
+        expect(mergeInterchanges([blob('0xr', 'a'), blob('0xs', 'b')]).error).toMatch(/two different chains/)
+    })
+})
+
+describe('KNOWN_GENESIS_ROOTS', () => {
+    it('carries the mainnet root', () => {
+        expect(KNOWN_GENESIS_ROOTS.mainnet).toBe('0x4b363db94e286120d76eb905340fdd4e54bfe9f06bf33ff6cf5ad27f511bfe95')
     })
 })

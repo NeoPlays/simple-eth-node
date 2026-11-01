@@ -371,11 +371,11 @@ export function initializeIpcHandlers() {
         }
     });
 
-    ipcMain.handle('validate-slashing-protection', async (_, nodeId, content, pubkeys) => {
+    ipcMain.handle('validate-slashing-protection', async (_, nodeId, content, pubkeys, serviceId) => {
         try {
             const node = nodeManager.findNode(nodeId)
             if (!node) throw new Error('Node not found')
-            return await node.validateSlashingProtection(content, pubkeys)
+            return await node.validateSlashingProtection(content, pubkeys, serviceId || null)
         } catch (error) {
             log.error('validate-slashing-protection error:', error)
             return { ok: false, error: error.message || 'Could not validate the file' }
